@@ -18,7 +18,7 @@ from lerobot.common.policies.diffusion.modeling_diffusion import DiffusionPolicy
 output_directory = Path("outputs/eval/example_pusht_diffusion")
 output_directory.mkdir(parents=True, exist_ok=True)
 
-device = torch.device("cuda")
+device = torch.device("cpu")
 
 # Download the diffusion policy for pusht environment
 pretrained_policy_path = Path(snapshot_download("lerobot/diffusion_pusht"))
@@ -36,6 +36,7 @@ env = gym.make(
     "gym_pusht/PushT-v0",
     obs_type="pixels_agent_pos",
     max_episode_steps=300,
+    render_mode="human"
 )
 
 # Reset the policy and environmens to prepare for rollout

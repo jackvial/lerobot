@@ -489,6 +489,8 @@ def record_dataset(
         info=info,
         videos_dir=videos_dir,
     )
+
+    stats = {}
     if run_compute_stats:
         logging.info("Computing dataset statistics")
         os.system('say "Computing dataset statistics" &')
