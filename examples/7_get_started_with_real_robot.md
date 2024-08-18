@@ -879,13 +879,13 @@ Your robot should replicate movements similar to those you recorded. For example
 To train a policy to control your robot, use the [`python lerobot/scripts/train.py`](../lerobot/scripts/train.py) script. A few arguments are required. Here is an example command:
 ```bash
 DATA_DIR=data python lerobot/scripts/train.py \
-  dataset_repo_id=${HF_USER}/koch_test \
+  dataset_repo_id=jackvial/koch_pick_and_place_pistachio_2_e10 \
   policy=act_koch_real \
   env=koch_real \
-  hydra.run.dir=outputs/train/act_koch_test \
-  hydra.job.name=act_koch_test \
+  hydra.run.dir=outputs/train/act_koch_pick_and_place_pistachio_2_e10 \
+  hydra.job.name=act_koch_pick_and_place_pistachio_2_e10 \
   device=cuda \
-  wandb.enable=true
+  wandb.enable=false
 ```
 
 Let's explain it:
@@ -952,11 +952,11 @@ Try this code for running inference for 60 seconds at 30 fps:
 ```python
 from lerobot.common.policies.act.modeling_act import ACTPolicy
 
-inference_time_s = 60
-fps = 30
+inference_time_s = 10
+fps = 15
 device = "cuda"  # TODO: On Mac, use "mps" or "cpu"
 
-ckpt_path = "outputs/train/act_koch_test/checkpoints/last/pretrained_model"
+ckpt_path = "outputs/train/act_koch_pick_and_place_pistachio_2_e10_2/checkpoints/last/pretrained_model"
 policy = ACTPolicy.from_pretrained(ckpt_path)
 policy.to(device)
 
