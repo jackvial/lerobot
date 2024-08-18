@@ -37,8 +37,7 @@ local$ open http://localhost:9090
 
 - Visualize data stored on a distant machine with a local viewer:
 ```bash
-distant$ python lerobot/scripts/visualize_dataset_html.py \
-    --repo-id lerobot/pusht
+distant$ python lerobot/scripts/visualize_dataset_html.py --repo-id jackvial/koch_pick_and_place_pistachio_1_e10
 
 local$ ssh -L 9090:localhost:9090 distant  # create a ssh tunnel
 local$ open http://localhost:9090
