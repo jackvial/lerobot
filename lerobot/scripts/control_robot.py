@@ -28,11 +28,14 @@ python lerobot/scripts/control_robot.py teleoperate \
 - Record one episode in order to test replay:
 ```bash
 python lerobot/scripts/control_robot.py record \
-    --fps 30 \
+    --fps 15 \
     --root tmp/data \
-    --repo-id $USER/koch_test \
-    --num-episodes 1 \
-    --run-compute-stats 0
+    --repo-id jackvial/koch_pick_and_place_pistachio_1_e10 \
+    --episode-time-s 12 \
+    --reset-time-s 8 \
+    --num-episodes 10 \
+    --run-compute-stats 0 \
+    --robot-path lerobot/configs/robot/koch_jack.yaml
 ```
 
 - Visualize dataset:

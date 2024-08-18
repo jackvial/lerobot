@@ -51,8 +51,7 @@ Finally, connect both arms to your computer via USB. Note that the USB doesn't p
 
 In the upcoming sections, you'll learn about our classes and functions by running some python code, in an interactive session, or by copy-pasting it in a python file. If it's your first time using the tutorial, we highly recommend going through these steps to get deeper intuition about how things work. Once you're more familiar, you can streamline the process by directly running the teleoperate script (which is detailed further in the tutorial):
 ```bash
-python lerobot/scripts/control_robot.py teleoperate \
-  --robot-path lerobot/configs/robot/koch.yaml \
+python lerobot/scripts/control_robot.py teleoperate --robot-path lerobot/configs/robot/koch_jack.yaml \
   --robot-overrides '~cameras'  # do not instantiate the cameras
 ```
 

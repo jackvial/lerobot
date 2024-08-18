@@ -1,0 +1,79 @@
+
+# from lerobot.common.robot_devices.cameras.opencv import OpenCVCamera, OpenCVCameraConfig
+# from lerobot.common.robot_devices.motors.dynamixel import DynamixelMotorsBus
+# from lerobot.common.robot_devices.robots.koch import KochRobot
+
+# robot = KochRobot(
+#     leader_arms={
+#         "main": DynamixelMotorsBus(
+#             port="/dev/ttyACM1",
+#             motors={
+#                 # name: (index, model)
+#                 "shoulder_pan": (1, "xl330-m077"),
+#                 "shoulder_lift": (2, "xl330-m077"),
+#                 "elbow_flex": (3, "xl330-m077"),
+#                 "wrist_flex": (4, "xl330-m077"),
+#                 "wrist_roll": (5, "xl330-m077"),
+#                 "gripper": (6, "xl330-m077"),
+#             },
+#         ),
+#     },
+#     follower_arms={
+#         "main": DynamixelMotorsBus(
+#             port="/dev/ttyACM0",
+#             motors={
+#                 # name: (index, model)
+#                 "shoulder_pan": (1, "xl430-w250"),
+#                 "shoulder_lift": (2, "xl430-w250"),
+#                 "elbow_flex": (3, "xl330-m288"),
+#                 "wrist_flex": (4, "xl330-m288"),
+#                 "wrist_roll": (5, "xl330-m288"),
+#                 "gripper": (6, "xl330-m288"),
+#             },
+#         ),
+#     },
+#     cameras={
+#         "elp0": OpenCVCamera(0, config=OpenCVCameraConfig(fps=15, width=800, height=600, color_mode="rgb")),
+#         "elp1": OpenCVCamera(4, config=OpenCVCameraConfig(fps=15, width=800, height=600, color_mode="rgb")),
+#     },
+# )
+
+_target_: lerobot.common.robot_devices.robots.koch.KochRobot
+calibration_path: .cache/calibration/koch.pkl
+leader_arms:
+  main:
+    _target_: lerobot.common.robot_devices.motors.dynamixel.DynamixelMotorsBus
+    port: /dev/ttyACM1
+    motors:
+      # name: (index, model)
+      shoulder_pan: [1, "xl330-m077"]
+      shoulder_lift: [2, "xl330-m077"]
+      elbow_flex: [3, "xl330-m077"]
+      wrist_flex: [4, "xl330-m077"]
+      wrist_roll: [5, "xl330-m077"]
+      gripper: [6, "xl330-m077"]
+follower_arms:
+  main:
+    _target_: lerobot.common.robot_devices.motors.dynamixel.DynamixelMotorsBus
+    port: /dev/ttyACM0
+    motors:
+      # name: (index, model)
+      shoulder_pan: [1, "xl430-w250"]
+      shoulder_lift: [2, "xl430-w250"]
+      elbow_flex: [3, "xl330-m288"]
+      wrist_flex: [4, "xl330-m288"]
+      wrist_roll: [5, "xl330-m288"]
+      gripper: [6, "xl330-m288"]
+cameras:
+  elp0:
+    _target_: lerobot.common.robot_devices.cameras.opencv.OpenCVCamera
+    camera_index: 0
+    fps: 15
+    width: 800
+    height: 600
+  elp1:
+    _target_: lerobot.common.robot_devices.cameras.opencv.OpenCVCamera
+    camera_index: 4
+    fps: 15
+    width: 800
+    height: 600
