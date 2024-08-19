@@ -8,7 +8,7 @@ inference_time_s = 10
 fps = 15
 device = "cuda"  # TODO: On Mac, use "mps" or "cpu"
 
-ckpt_path = "outputs/train/act_koch_pick_and_place_pistachio_2_e10_2/checkpoints/last/pretrained_model"
+ckpt_path = "outputs/train/act_koch_pick_and_place_pistachio_8_e100_2/checkpoints/last/pretrained_model"
 robot_path = "lerobot/configs/robot/koch_jack.yaml"
 policy = ACTPolicy.from_pretrained(ckpt_path)
 policy.to(device)
