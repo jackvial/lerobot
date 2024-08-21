@@ -14,7 +14,7 @@
 # ```
 
 seed: 1000
-dataset_repo_id: jackvial/koch_pick_and_place_pistachio_8_e100
+dataset_repo_id: [jackvial/koch_pick_and_place_pistachio_8_e100, jackvial/koch_pick_and_place_pistachio_10_e20]
 
 override_dataset_stats:
   observation.images.elp1:
