@@ -5,6 +5,7 @@ import torch
 
 from lerobot.common.robot_devices.robots.factory import make_robot
 from lerobot.common.policies.act.modeling_act import ACTPolicy
+from lerobot.common.policies.diffusion.modeling_diffusion import DiffusionPolicy
 from lerobot.common.utils.utils import init_hydra_config
 
 
@@ -22,7 +23,7 @@ if __name__ == "__main__":
 
 
     parser = argparse.ArgumentParser(description='Run inference with ACTPolicy')
-    parser.add_argument('--inference_time', type=int, default=10, help='Duration of inference in seconds')
+    parser.add_argument('--inference_time', type=int, default=60, help='Duration of inference in seconds')
     parser.add_argument('--fps', type=int, default=15, help='Frames per second')
     parser.add_argument('--device', type=str, default='cuda', help='Device to run inference on')
     parser.add_argument('--modelname-or-path', type=str, default='outputs/train/act_koch_pick_and_place_pistachio_8_e100_2_and_10_e20_and_11_e20_004/checkpoints/last/pretrained_model', help='Path to the model')
@@ -30,15 +31,14 @@ if __name__ == "__main__":
 
     robot_path = "lerobot/configs/robot/koch_jack.yaml"
 
-    # policy = ACTPolicy.from_pretrained(args.modelname_or_path)
-    policy = ACTPolicy.from_pretrained("jnm38/diffusion-pistachio-v1")
+    policy = DiffusionPolicy.from_pretrained(args.modelname_or_path)
     policy.to(args.device)
 
     robot_cfg = init_hydra_config(robot_path)
     robot = make_robot(robot_cfg)
     robot.connect()
 
-    for _ in range(args.inference_time_s * args.fps):
+    for _ in range(args.inference_time * args.fps):
 
         start_time = time.perf_counter()
 
