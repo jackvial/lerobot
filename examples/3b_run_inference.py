@@ -30,7 +30,8 @@ if __name__ == "__main__":
 
     robot_path = "lerobot/configs/robot/koch_jack.yaml"
 
-    policy = ACTPolicy.from_pretrained(args.modelname_or_path)
+    # policy = ACTPolicy.from_pretrained(args.modelname_or_path)
+    policy = ACTPolicy.from_pretrained("jnm38/diffusion-pistachio-v1")
     policy.to(args.device)
 
     robot_cfg = init_hydra_config(robot_path)
