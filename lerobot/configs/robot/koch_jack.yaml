@@ -1,5 +1,14 @@
 _target_: lerobot.common.robot_devices.robots.koch.KochRobot
-calibration_path: .cache/calibration/koch.pkl
+robot_type: koch
+calibration_dir: .cache/calibration/koch
+# calibration_path: .cache/calibration/koch.pkl
+
+# `max_relative_target` limits the magnitude of the relative positional target vector for safety purposes.
+# Set this to a positive scalar to have the same value for all motors, or a list that is the same length as
+# the number of motors in your follower arms.
+max_relative_target: [10.0, 10.0, 10.0, 10.0, 10.0, 15.0]
+
+
 leader_arms:
   main:
     _target_: lerobot.common.robot_devices.motors.dynamixel.DynamixelMotorsBus
@@ -37,3 +46,8 @@ cameras:
     fps: 15
     width: 800
     height: 600
+
+# ~ Koch specific settings ~
+# Sets the leader arm in torque mode with the gripper motor set to this angle. This makes it possible
+# to squeeze the gripper and have it spring back to an open position on its own.
+gripper_open_degree: 35.156
