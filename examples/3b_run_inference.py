@@ -46,40 +46,40 @@ if __name__ == "__main__":
     print(policy)
 
 
-    # policy.to(args.device)
+    policy.to(args.device)
 
-    # robot_cfg = init_hydra_config(robot_path)
-    # robot = make_robot(robot_cfg)
-    # robot.connect()
+    robot_cfg = init_hydra_config(robot_path)
+    robot = make_robot(robot_cfg)
+    robot.connect()
 
-    # for _ in range(args.inference_time * args.fps):
+    for _ in range(args.inference_time * args.fps):
 
-    #     start_time = time.perf_counter()
+        start_time = time.perf_counter()
 
-    #     # Read the follower state and access the frames from the cameras
-    #     observation = robot.capture_observation()
+        # Read the follower state and access the frames from the cameras
+        observation = robot.capture_observation()
 
-    #     # Convert to pytorch format: channel first and float32 in [0,1]
-    #     # with batch dimension
-    #     for name in observation:
-    #         if "image" in name:
-    #             observation[name] = observation[name].type(torch.float32) / 255
-    #             observation[name] = observation[name].permute(2, 0, 1).contiguous()
-    #         observation[name] = observation[name].unsqueeze(0)
-    #         observation[name] = observation[name].to(args.device)
+        # Convert to pytorch format: channel first and float32 in [0,1]
+        # with batch dimension
+        for name in observation:
+            if "image" in name:
+                observation[name] = observation[name].type(torch.float32) / 255
+                observation[name] = observation[name].permute(2, 0, 1).contiguous()
+            observation[name] = observation[name].unsqueeze(0)
+            observation[name] = observation[name].to(args.device)
 
-    #     # Compute the next action with the policy
-    #     # based on the current observation
-    #     action = policy.select_action(observation)
+        # Compute the next action with the policy
+        # based on the current observation
+        action = policy.select_action(observation)
 
-    #     # Remove batch dimension
-    #     action = action.squeeze(0)
+        # Remove batch dimension
+        action = action.squeeze(0)
 
-    #     # Move to cpu, if not already the case
-    #     action = action.to("cpu")
+        # Move to cpu, if not already the case
+        action = action.to("cpu")
 
-    #     # Order the robot to move
-    #     robot.send_action(action)
+        # Order the robot to move
+        robot.send_action(action)
 
-    #     dt_s = time.perf_counter() - start_time
-    #     busy_wait(1 / args.fps - dt_s)
+        dt_s = time.perf_counter() - start_time
+        busy_wait(1 / args.fps - dt_s)

@@ -242,12 +242,15 @@ def is_headless():
 
 
 def calibrate(robot: Robot, arms: list[str] | None):
+    print("arms: ", arms)
     available_arms = []
     for name in robot.follower_arms:
         arm_id = get_arm_id(name, "follower")
+        print("follower arm_id: ", arm_id)
         available_arms.append(arm_id)
     for name in robot.leader_arms:
         arm_id = get_arm_id(name, "leader")
+        print("leader arm_id: ", arm_id)
         available_arms.append(arm_id)
 
     unknown_arms = [arm_id for arm_id in arms if arm_id not in available_arms]
@@ -739,7 +742,7 @@ if __name__ == "__main__":
     parser_calib = subparsers.add_parser("calibrate", parents=[base_parser])
     parser_calib.add_argument(
         "--arms",
-        type=int,
+        type=str,
         nargs="*",
         help="List of arms to calibrate (e.g. `--arms left_follower right_follower left_leader`)",
     )
