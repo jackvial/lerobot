@@ -33,8 +33,11 @@ def segment_hsv(img) -> tuple[np.ndarray, np.ndarray]:
     # Keep the convex hull.
     hull = cv2.convexHull(cv2.findNonZero(mask))
     mask = cv2.drawContours(mask, [hull], 0, 255, -1)
-
     annotated_image = cv2.drawContours(img_orig, [hull], 0, 255, 1)
+
+    # @TODO - Is this for the cube, do we need to change the color to orange?
+    # mask = cv2.drawContours(mask, [hull], 0, 255, -1)  # mask stays white
+    # annotated_image = cv2.drawContours(img_orig, [hull], 0, (0, 165, 255), 1)  # orange contour
 
     return (mask > 0).astype(bool), annotated_image
 
