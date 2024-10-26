@@ -8,18 +8,25 @@ def segment_hsv(img) -> tuple[np.ndarray, np.ndarray]:
     # Preprocess.
     img_orig = img.copy()
     hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
-
+    
     # Segment with HSV bounds.
+    # Expanding hue range to capture more orange/reddish tones
+    # OpenCV HSV: H[0-180], S[0-255], V[0-255]
     mask = (
         (
-            (hsv[..., 0] >= 195 / 2)
-            & (hsv[..., 0] <= 260 / 2)
-            & (hsv[..., 1] >= 240)
+            # hue range for orange
+            # This covers more orange and slightly reddish tones
+            ((hsv[..., 0] >= 0) & (hsv[..., 0] <= 60))
+            # Keeping same saturation range
+            & (hsv[..., 1] >= 75)
+            & (hsv[..., 1] <= 200)
+            # Keeping same value range
             & (hsv[..., 2] >= 100)
-            & (hsv[..., 2] <= 240)
+            & (hsv[..., 2] <= 215)
         )
         * 255
     ).astype(np.uint8)
+
     if np.count_nonzero(mask) == 0:
         return mask, img_orig
 
@@ -34,10 +41,6 @@ def segment_hsv(img) -> tuple[np.ndarray, np.ndarray]:
     hull = cv2.convexHull(cv2.findNonZero(mask))
     mask = cv2.drawContours(mask, [hull], 0, 255, -1)
     annotated_image = cv2.drawContours(img_orig, [hull], 0, 255, 1)
-
-    # @TODO - Is this for the cube, do we need to change the color to orange?
-    # mask = cv2.drawContours(mask, [hull], 0, 255, -1)  # mask stays white
-    # annotated_image = cv2.drawContours(img_orig, [hull], 0, (0, 165, 255), 1)  # orange contour
 
     return (mask > 0).astype(bool), annotated_image
 
@@ -105,6 +108,11 @@ class GoalSetter:
         return (self._mask > 0).astype(bool)
 
     def save_goal_mask(self, fp: Path | str):
+        print(f"Saving mask to {fp}")
+        print(f"Mask shape: {self._mask.shape}")
+        print(f"Mask dtype: {self._mask.dtype}")
+        sum_mask = np.sum(self._mask)
+        print(f"Sum of mask: {sum_mask}")
         np.save(str(fp), self._mask)
 
     def run(self):

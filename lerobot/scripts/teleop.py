@@ -16,7 +16,7 @@ parser.add_argument("-v", "--visualize", nargs="+", choices=["camera", "twin"], 
 args = parser.parse_args()
 
 
-robot: ManipulatorRobot = make_robot(init_hydra_config("lerobot/configs/robot/koch_.yaml"))
+robot: ManipulatorRobot = make_robot(init_hydra_config("lerobot/configs/robot/koch_tdmpc_jack.yaml"))
 
 robot.connect()
 

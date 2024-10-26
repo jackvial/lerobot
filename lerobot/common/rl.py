@@ -262,7 +262,7 @@ if __name__ == "__main__":
     from lerobot.common.robot_devices.robots.factory import make_robot
     from lerobot.common.utils.utils import init_hydra_config
 
-    robot = make_robot(init_hydra_config("lerobot/configs/robot/koch_.yaml"))
+    robot = make_robot(init_hydra_config("lerobot/configs/robot/koch_tdmpc_jack.yaml"))
     robot.connect()
     reset_for_cube_push(robot, right=True)
     reset_for_cube_push(robot, right=False)

@@ -562,7 +562,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--robot-path",
         type=str,
-        default="lerobot/configs/robot/koch_.yaml",
+        default="lerobot/configs/robot/koch_tdmpc_jack.yaml",
         help="Path to robot yaml file used to instantiate the robot using `make_robot` factory function.",
     )
     parser.add_argument(
