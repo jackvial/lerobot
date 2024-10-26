@@ -25,10 +25,15 @@ GRIPPER_TIP_BOUNDS = np.row_stack([GRIPPER_TIP_X_BOUNDS, GRIPPER_TIP_Y_BOUNDS, G
 
 
 def is_in_bounds(gripper_tip_pos, buffer: float | np.ndarray = 0):
+    print("gripper_tip_pos.shape", gripper_tip_pos.shape)
     if not isinstance(buffer, np.ndarray):
         buffer = np.zeros_like(GRIPPER_TIP_BOUNDS) + buffer
     for i, bounds in enumerate(GRIPPER_TIP_BOUNDS):
         assert (bounds[1] - bounds[0]) > buffer[i].sum()
+        lower_bound_check = gripper_tip_pos[i] < bounds[0] + buffer[i][0]
+        # print(f"lower_bound_check: {lower_bound_check}")
+        upper_bound_check = gripper_tip_pos[i] > bounds[1] - buffer[i][1]
+        # print(f"upper_bound_check: {upper_bound_check}")
         if gripper_tip_pos[i] < bounds[0] + buffer[i][0] or gripper_tip_pos[i] > bounds[1] - buffer[i][1]:
             return False
     return True
