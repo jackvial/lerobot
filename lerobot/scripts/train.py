@@ -427,7 +427,7 @@ def train(cfg: DictConfig, out_dir: str | None = None, job_name: str | None = No
                     warmup_time_s=1,
                     use_relative_actions=True,
                     max_steps=MAX_STEPS,
-                    visualize_img=True,
+                    visualize_img=False,
                     visualize_3d=False,
                 )
             log_eval_info(logger, eval_info["aggregated"], step, cfg, offline_dataset, is_online=is_online)
@@ -618,7 +618,7 @@ def train(cfg: DictConfig, out_dir: str | None = None, job_name: str | None = No
                     warmup_time_s=1,
                     use_relative_actions=True,
                     max_steps=MAX_STEPS,
-                    visualize_img=True,
+                    visualize_img=False,
                     visualize_3d=False,
                 )
                 if len(online_dataset) > 0:
@@ -649,6 +649,7 @@ def train(cfg: DictConfig, out_dir: str | None = None, job_name: str | None = No
 
             return online_rollout_s, update_online_buffer_s, len(eval_info["episodes"]["index"])
 
+        print("executor.submit(")
         future = executor.submit(sample_trajectory_and_update_buffer)
         # If we aren't doing async rollouts, or if we haven't yet gotten enough examples in our buffer, wait
         # here until the rollout and buffer update is done, before proceeding to the policy update steps.
@@ -657,6 +658,7 @@ def train(cfg: DictConfig, out_dir: str | None = None, job_name: str | None = No
             or len(online_dataset) <= cfg.training.online_buffer_seed_size
         ):
             online_rollout_s, update_online_buffer_s, n_new_frames = future.result()
+            print("online_rollout_s: ", online_rollout_s)
 
         if len(online_dataset) <= cfg.training.online_buffer_seed_size:
             logging.info(

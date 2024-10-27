@@ -33,6 +33,7 @@ def get_stats_einops_patterns(dataset, num_workers=0):
         batch_size=2,
         shuffle=False,
     )
+
     batch = next(iter(dataloader))
 
     stats_patterns = {}
@@ -92,6 +93,7 @@ def compute_stats(dataset, batch_size=32, num_workers=16, max_num_samples=None):
             drop_last=False,
             generator=generator,
         )
+        print("dataloader: ", dataloader)
         return dataloader
 
     # Note: Due to be refactored soon. The point of storing `first_batch` is to make sure we don't get

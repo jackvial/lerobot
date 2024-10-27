@@ -152,27 +152,31 @@ def rollout(
     # autonomously (for online rollouts).
     if manual_reset:
         msg = f"Going {goal}. Reset the environment and robot. Press return in the terminal when ready."
-        say(msg)
+        print(msg)
         keyboard_thread = threading.Thread(target=lambda: input(msg), daemon=True)
         keyboard_thread.start()
         while True:
             start = time.perf_counter()
             robot.teleop_step()
             if not keyboard_thread.is_alive():
+                print("Keyboard thread is done. breaking")
                 break
             time.sleep(max(0, 1 / fps - (time.perf_counter() - start)))
-        say("Go!")
+        print("Go!")
     else:
-        say(f"Go {goal}")
+        print(f"Go {goal}")
         reset_for_cube_push(robot, right=start_pos == "right")
+
+    print("Robot reset. Starting rollout.")
 
     # TASK SPECIFIC: Check if the cube is out of bounds, and ask for help until it's placed back in bounds.
     while True:
         observation: dict[str, torch.Tensor] = robot.capture_observation()
         cube_mask, _ = segment_hsv(observation["observation.images.main"].numpy())
         if np.count_nonzero(cube_mask & in_bounds_mask) == np.count_nonzero(cube_mask):
+            print("Cube is in bounds. break inner loop.")
             break
-        say("Cube is out of bounds! Help.")
+        print("Cube is out of bounds! Help.")
         time.sleep(5)
 
     # Preparing a bunch of stuff for the rollout loop.
@@ -189,6 +193,8 @@ def rollout(
 
     # This is the data structure the episode will be "recorded" into.
     episode_data = defaultdict(list)
+
+    print("enable_intevention: ", enable_intevention)
 
     if enable_intevention:
         ps5_controller = PS5Controller()
@@ -209,6 +215,7 @@ def rollout(
 
     # MAIN ROLLOUT LOOP.
     while True:
+        print("Running main rollout loop: ", step)
         over_time = False
         start_step_time = to_relative_time(time.perf_counter())
         is_warmup = start_step_time <= warmup_s
@@ -217,6 +224,7 @@ def rollout(
 
         # Update the episode data for this frame with indices, the observation, and the reward.
         if not is_warmup:
+            print("Not in warmup")
             episode_data[LeRobotDatasetV2.INDEX_KEY].append(step)
             episode_data[LeRobotDatasetV2.EPISODE_INDEX_KEY].append(0)
             episode_data[LeRobotDatasetV2.TIMESTAMP_KEY].append(start_step_time)
@@ -234,6 +242,7 @@ def rollout(
             # All data keys that start with "next." get appended to the episode data starting from step 1
             # That way they are offset by 1 relative to keys not starting with "next.".
             if step > 0:
+                # print("Step > 0")
                 if len(episode_data["action"]) >= 2:
                     prior_action = episode_data["action"][-2]
                 else:
@@ -252,6 +261,7 @@ def rollout(
                 episode_data["next.done"].append(success or do_terminate)
 
         if annotated_img is None:
+            print("Annotated image is None")
             annotated_img = observation["observation.images.main"].numpy()
         # Draw the goal mask on the annotated image for visualization.
         annotated_img[where_goal] = annotated_img[where_goal] // 2 + np.array([127, 127, 127])
@@ -271,6 +281,7 @@ def rollout(
 
         # Convert to pytorch format: channel first and float32 in [0,1] with batch dimension.
         for name in observation:
+            # print("Converting to pytorch format: ", name)
             if name.startswith("observation.image"):
                 # Small side mission: While we are looping through the image observations, also set up the
                 # visualization image.
@@ -297,6 +308,7 @@ def rollout(
 
         # Compute the action with the policy based on the current observation.
         with torch.inference_mode():
+            print("Computing action with the policy")
             # We don't want to take any longer than this to return a result as then we'd be falling behind the
             # control loop.
             # HACK. subtract 0.025 for a buffer. Careful about this if changing the FPS.
@@ -332,15 +344,20 @@ def rollout(
             digital_twin.set_twin_pose(follower_pos, follower_pos + action_sequence.numpy())
 
         if visualize_img:
+            print("Visualizing image")
             for name in to_visualize:
+                print("Visualizing: ", name)
                 if over_time:
                     purple = np.array([255, 0, 255], dtype=np.uint8)
                     to_visualize[name][:20] = purple
                     to_visualize[name][-20:] = purple
                     to_visualize[name][:, :20] = purple
                     to_visualize[name][:, -20:] = purple
+                print("before cv2.imshow")
                 cv2.imshow(name, cv2.cvtColor(to_visualize[name], cv2.COLOR_RGB2BGR))
+                print("after cv2.imshow")
                 k = cv2.waitKey(1)
+                print("k: ", k)
                 if k == ord("p"):
                     cv2.waitKey(0)
                 if k == ord("q"):
@@ -408,9 +425,11 @@ def rollout(
             busy_wait(period - elapsed - 0.001)
 
         if visualize_3d and digital_twin.quit_signal_is_set():
+            print("Digital twin quit signal is set. Breaking.")
             break
 
         if not is_warmup:
+            print("Not in warmup. Incrementing step.")
             step += 1
     # ^ Finish rollout loop.
 

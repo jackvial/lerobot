@@ -23,7 +23,7 @@ from lerobot.common.vision import segment_hsv
 # GRIPPER_TIP_X_BOUNDS = (-0.16, 0.16)
 # GRIPPER_TIP_Y_BOUNDS = (-0.25, -0.06)
 
-GRIPPER_TIP_Z_BOUNDS = (-0.03, 0.065)    # Extend bound under table so arm on table doesn't count as OOB
+GRIPPER_TIP_Z_BOUNDS = (-0.02, 0.065)    # Extend bound under table so arm on table doesn't count as OOB
 
 # Rotate the bounded area 90 degrees clockwise (looking at arm from behind)
 GRIPPER_TIP_X_BOUNDS = (0.06, 0.25)      
@@ -44,6 +44,8 @@ def is_in_bounds(gripper_tip_pos, buffer: float | np.ndarray = 0):
         buffer = np.zeros_like(GRIPPER_TIP_BOUNDS) + buffer
         
     for i, bounds in enumerate(GRIPPER_TIP_BOUNDS):
+        # if not ((bounds[1] - bounds[0]) > buffer[i].sum()):
+        #     print(f"Bounds: {bounds}, Buffer: {buffer[i]}")
         assert (bounds[1] - bounds[0]) > buffer[i].sum()
         if (gripper_tip_pos[i] < bounds[0] + buffer[i][0] or 
             gripper_tip_pos[i] > bounds[1] - buffer[i][1]):
@@ -137,7 +139,9 @@ def calc_reward_cube_push(
     do_terminate = False
 
     # Check if the gripper went OOB.
+    print(f"Current joint pos: {current_joint_pos}")
     gripper_tip_pos = RobotKinematics.fk_gripper_tip(current_joint_pos)[:3, -1]
+    print(f"Gripper tip pos: {gripper_tip_pos}")
     if not is_in_bounds(gripper_tip_pos):
         do_terminate = True
         reward += oob_reward
@@ -234,6 +238,7 @@ def reset_for_joint_pos(robot: ManipulatorRobot):
 
 
 def reset_for_cube_push(robot: ManipulatorRobot, right=True):
+    print("Resetting for cube push.")
     """Reset the arm at the start of an episode.
 
     Reset to the right with right=True, or left with right=False.
@@ -249,18 +254,37 @@ def reset_for_cube_push(robot: ManipulatorRobot, right=True):
     while True:
         reset_pos = torch.tensor(
             [
-                np.random.uniform(125, 135) if right else np.random.uniform(45, 55),
-                np.random.uniform(54, 58),
-                np.random.uniform(50, 52),
-                np.random.uniform(78, 98),
-                np.random.uniform(-41, -31) if right else np.random.uniform(31, 41),
+                np.random.uniform(25, 35) if right else np.random.uniform(-35, -42),
+                np.random.uniform(65, 75),
+                np.random.uniform(75, 80),
+                np.random.uniform(70, 80),
+                np.random.uniform(-90, -100) if right else np.random.uniform(-50, -60),
                 np.random.uniform(0, 20),
             ]
         ).float()
-        if is_in_bounds(
+
+        # Old gripper bounds
+        # GRIPPER_TIP_X_BOUNDS = (-0.16, 0.16)
+        # GRIPPER_TIP_Y_BOUNDS = (-0.25, -0.06)
+        # GRIPPER_TIP_Z_BOUNDS = (0.008, 0.065)
+
+        # New gripper
+        # GRIPPER_TIP_X_BOUNDS = (0.06, 0.25)      
+        # GRIPPER_TIP_Z_BOUNDS = (-0.03, 0.065)    # Extend bound under table so arm on table doesn't count as OOB
+        # GRIPPER_TIP_Y_BOUNDS = (-0.16, 0.16) 
+
+        # Rotate the bounded area 90 degrees clockwise (looking at arm from behind)
+        # gripper_tip_pos = RobotKinematics.fk_gripper_tip(reset_pos.numpy())[:3, -1]
+        # print(f"Gripper tip pos: {gripper_tip_pos}")
+        in_bounds =  is_in_bounds(
             RobotKinematics.fk_gripper_tip(reset_pos.numpy())[:3, -1],
-            buffer=np.array([[0.02, 0.02], [0.02, 0.02], [0.02, 0.01]]),
-        ):
+            # x=0.15,y=-0.009,z=0.012
+            buffer=np.array([[0.07, 0.07], [-0.009, -0.009], [0.012, 0.012]]),
+        )
+
+        # print(f"Reset pos: {reset_pos.numpy()}, in bounds: {in_bounds}")
+
+        if in_bounds:
             break
     intermediate_pos = torch.from_numpy(robot.follower_arms["main"].read("Present_Position"))
     intermediate_pos[1] = staging_pos[1]

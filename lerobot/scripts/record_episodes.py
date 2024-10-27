@@ -54,7 +54,7 @@ if __name__ == "__main__":
         else:
             msg = "Found existing dataset directory. Loading it up."
             print(msg)
-            say(msg, blocking=True)
+            # print(msg, blocking=True)
     dataset = LeRobotDatasetV2(
         dataset_dir, fps=robot_cfg.cameras.main.fps, image_mode=LeRobotDatasetV2ImageMode.VIDEO
     )
@@ -65,7 +65,7 @@ if __name__ == "__main__":
             break
         goal = "left" if episode_ix % 2 == 0 else "right"
         msg = f"{episode_ix}."
-        say(msg, blocking=True)
+        # print(msg, blocking=True)
         print(msg)
         episode_data = rollout(
             robot,
@@ -74,10 +74,10 @@ if __name__ == "__main__":
             warmup_s=0,
             n_pad_episode_data=policy_cfg.policy.horizon - 1,
             manual_reset=True,
-            visualize_img=True,
+            visualize_img=False,
             goal=goal,
         )
-        say("Episode finished. Press the return key to proceed.")
+        print("Episode finished. Press the return key to proceed.")
         while True:
             res = input(
                 "Press return key to proceed, or 'n' then the return key to re-record the last episode, or "
@@ -97,9 +97,10 @@ if __name__ == "__main__":
 
     robot.disconnect()
 
-    say("Dataset recording finished. Computing dataset statistics.")
-    stats = compute_stats(dataset)
+    print("Dataset recording finished. Computing dataset statistics.")
+    # stats = compute_stats(dataset)
+    stats = compute_stats(dataset, batch_size=2, num_workers=0, max_num_samples=None)
     stats_path = dataset.storage_dir / "stats.safetensors"
     save_file(flatten_dict(stats), stats_path)
 
-    say("Done")
+    print("Done")
