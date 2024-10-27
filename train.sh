@@ -5,9 +5,10 @@ JOB_NAME=tdmpc_push_cube_9_0
     # training.online_steps_between_rollouts=1000 \
 # python -m debugpy --listen localhost:51355 --wait-for-client lerobot/scripts/train.py \
     # hydra.run.dir=outputs/train/2024-10-26/15-12-37_tdmpc_push_cube \
+    # hydra.run.dir=outputs/train/$(date +'%Y-%m-%d/%H-%M-%S')_${JOB_NAME} \
 python lerobot/scripts/train.py \
     hydra.job.name=$JOB_NAME \
-    hydra.run.dir=outputs/train/$(date +'%Y-%m-%d/%H-%M-%S')_${JOB_NAME} \
+    hydra.run.dir=outputs/train/2024-10-27/16-16-22_tdmpc_push_cube_9_0 \
     env=koch_real \
     dataset_repo_id=push_cube_9 \
     policy=tdmpc_real \
@@ -33,4 +34,4 @@ python lerobot/scripts/train.py \
     use_amp=true \
     wandb.enable=false \
     wandb.disable_artifact=true \
-    resume=false
+    resume=true
