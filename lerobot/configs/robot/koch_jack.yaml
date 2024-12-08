@@ -10,7 +10,7 @@ max_relative_target: null
 leader_arms:
   main:
     _target_: lerobot.common.robot_devices.motors.dynamixel.DynamixelMotorsBus
-     port: /dev/servo_585A007782
+    port: /dev/servo_585A007782
     motors:
       # name: (index, model)
       shoulder_pan: [1, "xl330-m077"]
@@ -42,7 +42,6 @@ cameras:
     # height: 120
     width: 800
     height: 600
-    height: 480
 
 # ~ Koch specific settings ~
 # Sets the leader arm in torque mode with the gripper motor set to this angle. This makes it possible
