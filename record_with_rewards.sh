@@ -1,10 +1,10 @@
 python lerobot/scripts/control_robot.py record \
     --robot-path lerobot/configs/robot/koch_jack.yaml \
     --fps 30 \
-    --root data \
-    --repo-id ${HF_USER}/koch_test \
+    --root with_rewards_2 \
+    --repo-id jackvial/koch_test \
     --warmup-time-s 5 \
-    --episode-time-s 40 \
+    --episode-time-s 20 \
     --reset-time-s 10 \
     --num-episodes 2 \
     --push-to-hub 1 \

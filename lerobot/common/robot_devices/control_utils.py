@@ -25,6 +25,51 @@ from lerobot.common.robot_devices.utils import busy_wait
 from lerobot.common.utils.utils import get_safe_torch_device, init_hydra_config, set_global_seed
 from lerobot.scripts.eval import get_pretrained_policy_path
 
+import os
+import numpy as np
+import threading
+import matplotlib.pyplot as plt
+
+print(f"Running on thread check 1: {threading.current_thread().name}")
+
+# Debugging Environment Variables
+print("Setting environment variables...")
+os.environ["QT_X11_NO_MITSHM"] = "1"  # Avoid shared memory issues
+os.environ["DISPLAY"] = os.getenv("DISPLAY", ":10.0")  # Ensure DISPLAY is set
+os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"  # Force software rendering
+
+print("Environment variables:")
+print(f"DISPLAY = {os.environ['DISPLAY']}")
+print(f"QT_X11_NO_MITSHM = {os.environ['QT_X11_NO_MITSHM']}")
+print(f"LIBGL_ALWAYS_SOFTWARE = {os.environ['LIBGL_ALWAYS_SOFTWARE']}")
+
+# Create a simple test image
+# print("Creating test image...")
+# image = np.zeros((300, 300, 3), dtype=np.uint8)
+# image[:] = (0, 255, 0)  # Fill with green color
+
+# # Try displaying the image
+# print("Attempting to display the image using cv2.imshow...")
+# cv2.namedWindow("Test Window", cv2.WINDOW_NORMAL)
+# try:
+#     cv2.imshow("Test Window", image)
+#     print("cv2.imshow succeeded.")
+# except Exception as e:
+#     print(f"Error during cv2.imshow: {e}")
+
+# # Add delay to keep the window open
+# print("Waiting for 1 second using cv2.waitKey...")
+# key = cv2.waitKey(1000)
+# print(f"cv2.waitKey returned: {key}")
+
+# print("Closing all windows...")
+# cv2.destroyAllWindows()
+
+# print("Script completed.")
+
+
+# time.sleep(1)  # Give X11 time to initialize
+
 
 def log_control_info(robot: Robot, dt_s, episode_index=None, frame_index=None, fps=None):
     log_items = []
@@ -285,20 +330,40 @@ def control_loop(
             dataset.add_frame(frame)
 
         if display_cameras and not is_headless():
+            print(f"Running on thread check 2: {threading.current_thread().name}")
+            print("Trying to display cameras...")
             image_keys = [key for key in observation if "image" in key]
+
+            # cv2 doesn't want to work with the X11 server
+            # for key in image_keys:
+            #     print(f"Displaying camera {key}")
+            #     cv2.namedWindow(key, cv2.WINDOW_NORMAL) 
+            #     cv2.imshow(key, cv2.cvtColor(observation[key].numpy(), cv2.COLOR_RGB2BGR))
+
+            # @TODO really need to have this go to a background
             for key in image_keys:
-                cv2.imshow(key, cv2.cvtColor(observation[key].numpy(), cv2.COLOR_RGB2BGR))
-            cv2.waitKey(1)
+                print(f"Displaying camera {key} with matplotlib...")
+                img = observation[key].numpy()
+                plt.imshow(img)
+                plt.title(key)
+                plt.show(block=False)
+                plt.pause(0.001)
+
+
+            # print("Waiting for key press...")
+            # cv2.waitKey(100)
 
         if fps is not None:
             dt_s = time.perf_counter() - start_loop_t
             busy_wait(1 / fps - dt_s)
 
         dt_s = time.perf_counter() - start_loop_t
-        log_control_info(robot, dt_s, fps=fps)
+
+        # @TODO - would be nice to have an option to turn off these logs
+        # log_control_info(robot, dt_s, fps=fps)
 
         timestamp = time.perf_counter() - start_episode_t
-        if events["exit_early"]:
+        if events["exit_early"]: 
             events["exit_early"] = False
             break
 
