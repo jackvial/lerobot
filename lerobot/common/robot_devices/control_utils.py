@@ -33,15 +33,15 @@ import matplotlib.pyplot as plt
 print(f"Running on thread check 1: {threading.current_thread().name}")
 
 # Debugging Environment Variables
-print("Setting environment variables...")
-os.environ["QT_X11_NO_MITSHM"] = "1"  # Avoid shared memory issues
-os.environ["DISPLAY"] = os.getenv("DISPLAY", ":10.0")  # Ensure DISPLAY is set
-os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"  # Force software rendering
+# print("Setting environment variables...")
+# os.environ["QT_X11_NO_MITSHM"] = "1"  # Avoid shared memory issues
+# os.environ["DISPLAY"] = os.getenv("DISPLAY", ":10.0")  # Ensure DISPLAY is set
+# os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"  # Force software rendering
 
-print("Environment variables:")
-print(f"DISPLAY = {os.environ['DISPLAY']}")
-print(f"QT_X11_NO_MITSHM = {os.environ['QT_X11_NO_MITSHM']}")
-print(f"LIBGL_ALWAYS_SOFTWARE = {os.environ['LIBGL_ALWAYS_SOFTWARE']}")
+# print("Environment variables:")
+# print(f"DISPLAY = {os.environ['DISPLAY']}")
+# print(f"QT_X11_NO_MITSHM = {os.environ['QT_X11_NO_MITSHM']}")
+# print(f"LIBGL_ALWAYS_SOFTWARE = {os.environ['LIBGL_ALWAYS_SOFTWARE']}")
 
 # Create a simple test image
 # print("Creating test image...")
@@ -166,6 +166,7 @@ def predict_action(observation, policy, device, use_amp):
 
 
 def init_keyboard_listener(assign_rewards=False):
+    print("assign_rewards:", assign_rewards)
     # Allow to exit early while recording an episode or resetting the environment,
     # by tapping the right arrow key '->'. This might require a sudo permission
     # to allow your terminal to monitor keyboard events.
@@ -187,6 +188,7 @@ def init_keyboard_listener(assign_rewards=False):
     from pynput import keyboard
 
     def on_press(key):
+        print(f"Key pressed: {key}")
         try:
             if key == keyboard.Key.right:
                 print("Right arrow key pressed. Exiting loop...")
@@ -330,28 +332,28 @@ def control_loop(
             dataset.add_frame(frame)
 
         if display_cameras and not is_headless():
-            print(f"Running on thread check 2: {threading.current_thread().name}")
-            print("Trying to display cameras...")
+            # print(f"Running on thread check 2: {threading.current_thread().name}")
+            # print("Trying to display cameras...")
             image_keys = [key for key in observation if "image" in key]
 
             # cv2 doesn't want to work with the X11 server
             # for key in image_keys:
             #     print(f"Displaying camera {key}")
-            #     cv2.namedWindow(key, cv2.WINDOW_NORMAL) 
+            #     # cv2.namedWindow(key, cv2.WINDOW_NORMAL) 
             #     cv2.imshow(key, cv2.cvtColor(observation[key].numpy(), cv2.COLOR_RGB2BGR))
 
             # @TODO really need to have this go to a background
-            for key in image_keys:
-                print(f"Displaying camera {key} with matplotlib...")
-                img = observation[key].numpy()
-                plt.imshow(img)
-                plt.title(key)
-                plt.show(block=False)
-                plt.pause(0.001)
+            # for key in image_keys:
+            #     img = observation[key].numpy()
+            #     print(f"Displaying camera {key} with matplotlib...")
+            #     plt.imshow(img)
+            #     plt.title(key)
+            #     plt.show(block=False)
+            #     plt.pause(0.001)
 
 
             # print("Waiting for key press...")
-            # cv2.waitKey(100)
+            #cv2.waitKey(1)
 
         if fps is not None:
             dt_s = time.perf_counter() - start_loop_t
