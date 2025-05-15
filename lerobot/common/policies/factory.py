@@ -59,6 +59,10 @@ def get_policy_class(name: str) -> PreTrainedPolicy:
         from lerobot.common.policies.pi0fast.modeling_pi0fast import PI0FASTPolicy
 
         return PI0FASTPolicy
+    elif name == "gemini":
+        from lerobot.common.policies.gemini.modeling_gemini import GeminiPolicy
+
+        return GeminiPolicy
     else:
         raise NotImplementedError(f"Policy with name {name} is not implemented.")
 
@@ -76,6 +80,10 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return PI0Config(**kwargs)
     elif policy_type == "pi0fast":
         return PI0FASTConfig(**kwargs)
+    elif policy_type == "gemini":
+        from lerobot.common.policies.gemini.configuration_gemini import GeminiConfig
+
+        return GeminiConfig(**kwargs)
     else:
         raise ValueError(f"Policy type '{policy_type}' is not available.")
 
