@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 
 from dataclasses import dataclass, field
-from typing import Any
 
 from lerobot.common.optim.optimizers import AdamConfig
+from lerobot.common.optim.schedulers import LRSchedulerConfig
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import NormalizationMode
 
@@ -11,61 +11,62 @@ from lerobot.configs.types import NormalizationMode
 @PreTrainedConfig.register_subclass("gemini")
 @dataclass
 class GeminiConfig(PreTrainedConfig):
-    """Configuration for GeminiPolicy.
+    """Configuration for `GeminiPolicy`.
 
-    This policy proxies action selection to the Google Gemini LLM.  It is
-    stateless and therefore has no trainable parameters, but we still expose a
-    few settings so that users can configure prompting.
+    This policy queries a Google Gemini chat model to obtain a sequence of joint
+    targets given a natural-language *prompt* supplied at evaluation time, e.g.::
 
-    Args:
-        prompt: High-level instruction describing the task (e.g. "Put nuts in bowl").
-        model: Gemini model identifier to use via the Google Generative AI API.
-        temperature: Sampling temperature passed to the model.
-        n_action_steps: When the LLM returns a sequence of actions we can buffer
-            more than one and play them out over successive environment steps.
+        --policy.prompt="Put nuts in bowl"
+
+    Only inference is supported – training hooks are provided as no-ops so that
+    the rest of the LeRobot pipeline can instantiate the config without error.
     """
 
-    prompt: str = "Put nuts in bowl"
-    model: str = "gemini-1.5-pro"
-    temperature: float = 0.0
-    n_action_steps: int = 1
+    # Name of the Gemini model to call via the Google Generative-AI SDK or
+    # `langchain_google_genai` wrapper.
+    model_name: str = "gemini-1.5-pro-latest"
 
-    # ---------------------------------------------------------------------
-    # Normalisation: We leave observations untouched and expect ACTION to be in
-    # [-1, 1] so that it is compatible with typical LeRobot environments.
-    # ---------------------------------------------------------------------
+    # The high-level task instruction that will be passed to Gemini.
+    prompt: str = ""
+
+    # Number of actions (timesteps) to request from Gemini per query.
+    n_action_steps: int = 10
+
+    # Leave observations and actions unnormalised – we expect them already to be
+    # in interpretable units (degrees).
     normalization_mapping: dict[str, NormalizationMode] = field(
         default_factory=lambda: {
-            "VISUAL": NormalizationMode.IDENTITY,
             "STATE": NormalizationMode.IDENTITY,
-            "ENV": NormalizationMode.IDENTITY,
-            "ACTION": NormalizationMode.MIN_MAX,
+            "ACTION": NormalizationMode.IDENTITY,
         }
     )
 
     # ------------------------------------------------------------------
-    # Mandatory abstract-method implementations from PreTrainedConfig
+    # Mandatory abstract hooks from `PreTrainedConfig`
     # ------------------------------------------------------------------
+
     @property
-    def observation_delta_indices(self) -> list | None:  # noqa: D401
+    def observation_delta_indices(self):  # noqa: D401
         return None
 
     @property
-    def action_delta_indices(self) -> list | None:  # noqa: D401
+    def action_delta_indices(self):  # noqa: D401
         return None
 
     @property
-    def reward_delta_indices(self) -> list | None:  # noqa: D401
+    def reward_delta_indices(self):  # noqa: D401
         return None
 
-    # GeminiPolicy is not trainable, but the training pipeline expects an
-    # optimiser config.  We therefore return a dummy preset.
     def get_optimizer_preset(self) -> AdamConfig:  # type: ignore[override]
+        # The model is not trainable – return a dummy preset.
         return AdamConfig(lr=1e-4)
 
-    def get_scheduler_preset(self):  # type: ignore[override]
+    def get_scheduler_preset(self) -> LRSchedulerConfig | None:  # type: ignore[override]
         return None
 
-    def validate_features(self) -> None:  # type: ignore[override]
+    def validate_features(self) -> None:  # noqa: D401
+        # Ensure that an ACTION feature (output shape) is available.  It will be
+        # injected by `make_policy` based on either the dataset metadata or the
+        # environment features.
         if self.action_feature is None:
-            raise ValueError("GeminiPolicy requires an ACTION feature to be defined.") 
+            raise ValueError("GeminiConfig requires the policy to have an ACTION feature defined.") 
