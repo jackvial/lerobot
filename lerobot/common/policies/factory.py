@@ -133,8 +133,32 @@ def make_policy(
 
     kwargs = {}
     if ds_meta is not None:
+        # Parse feature information from the dataset to dimension the policy.
         features = dataset_to_policy_features(ds_meta.features)
-        kwargs["dataset_stats"] = ds_meta.stats
+
+        # Only forward dataset statistics if they are available (i.e., the
+        # dataset already contains at least one episode).  When we are just
+        # *recording* a brand-new dataset, `ds_meta.stats` will be empty and
+        # passing it would overwrite the meaningful statistics that are stored
+        # inside the pretrained checkpoint, leading to `inf` buffers and an
+        # assertion error at inference time.
+        stats_candidate = getattr(ds_meta, "stats", None)
+        if stats_candidate:
+            # Skip freshly-created datasets whose default stats still contain
+            # infinities (they are placeholders until the first episode is
+            # written).  Using them would zero-out the pretrained statistics
+            # and trigger "mean is inf" assertions during inference.
+            def _contains_inf(d):
+                import torch
+
+                for sub in d.values():
+                    for tensor in sub.values():
+                        if torch.isinf(tensor).any():
+                            return True
+                return False
+
+            if not _contains_inf(stats_candidate):
+                kwargs["dataset_stats"] = stats_candidate
     else:
         if not cfg.pretrained_path:
             logging.warning(
