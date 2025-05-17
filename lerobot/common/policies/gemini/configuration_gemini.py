@@ -33,6 +33,15 @@ class GeminiConfig(PreTrainedConfig):
     n_action_steps: int = 10
 
     # ------------------------------------------------------------------
+    # Multimodal context flags
+    # ------------------------------------------------------------------
+    include_image: bool = False   # send current single RGB frame
+    include_state: bool = False   # send current joint angles textually
+    include_video: bool = False   # (future) send short clip instead of 1 frame
+    max_video_frames: int = 20    # clip length when include_video
+    image_resize: tuple[int, int] = (160, 120)  # WxH sent to Gemini
+
+    # ------------------------------------------------------------------
     # Gemini-specific control parameters
     # ------------------------------------------------------------------
     # Dimensionality of the robot action space (e.g. number of joints).

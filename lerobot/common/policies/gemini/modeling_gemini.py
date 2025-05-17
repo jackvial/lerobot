@@ -10,15 +10,14 @@ commands from a natural-language prompt and the current robot observation.
 
 from __future__ import annotations
 
-import json
-import os
-import re
+import json, os, re, base64, io
 from collections import deque
 from typing import List
 
 import torch
 from torch import Tensor
 import numpy as np
+from PIL import Image
 
 from lerobot.common.policies.pretrained import PreTrainedPolicy
 from lerobot.common.policies.gemini.configuration_gemini import GeminiConfig
@@ -86,6 +85,24 @@ class GeminiPolicy(PreTrainedPolicy):
 
         # Otherwise we need to query Gemini for the next *n_action_steps*.
         action_dim = self.config.action_feature.shape[0]
+
+        # ------------------------------------------------------------------
+        # Build multimodal content blocks for the user message
+        # ------------------------------------------------------------------
+        blocks = []
+        blocks.append({"type": "text", "text": self.config.prompt or "Provide joint targets."})
+
+        if self.config.include_state and "observation.state" in batch:
+            joints = batch["observation.state"][0].tolist()
+            blocks.append({"type": "text", "text": f"Current joint angles (deg): {joints}"})
+
+        if self.config.include_image and "observation.images.top" in batch:
+            img = batch["observation.images.top"][0]  # (C,H,W) float32
+            blocks.append({"type": "image_url", "image_url": self._img_to_url(img)})
+
+        # store for _query_gemini
+        self._extra_blocks = blocks
+
         response = self._query_gemini(action_dim)
 
         # Parse Gemini's response into a list[Tensor].  If parsing fails we fall
@@ -107,18 +124,18 @@ class GeminiPolicy(PreTrainedPolicy):
         """Send a prompt to Gemini and return the raw string response."""
 
         system_prompt = (
-            "You control a 6-DoF robot arm.  Respond ONLY with a JSON array of "
-            f"{self.config.n_action_steps} arrays, each containing {action_dim} "
-            "floating-point numbers that represent joint target angles in degrees."
+            "You control a 6-DoF physical robot arm.  Respond ONLY with a JSON array of "
+            f"{self.config.n_action_steps} arrays, each containing {action_dim} numbers (joint target angles in degrees). "
+            "Safety: no individual joint angle may change by more than ±10 degrees from its current value in a single action step."
         )
-        user_prompt = self.config.prompt or "Provide joint targets."
 
+        # `self._extra_blocks` is prepared in select_action
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
+            {"role": "user", "content": self._extra_blocks},
         ]
+
         result = self.llm.invoke(messages)
-        # Langchain returns an object with `.content` holding the assistant text.
         return getattr(result, "content", str(result))
 
     def _parse_actions(self, text: str, action_dim: int) -> List[Tensor]:
@@ -146,4 +163,17 @@ class GeminiPolicy(PreTrainedPolicy):
                 actions.append(torch.tensor(floats[idx : idx + action_dim], dtype=torch.float32))
                 idx += action_dim
             return actions
-        return [] 
+        return []
+
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
+
+    def _img_to_url(self, img: Tensor) -> str:
+        """Convert CHW float32 image to data URL JPEG."""
+        img_np = (img.clamp(0,1).mul(255).byte().permute(1,2,0).cpu().numpy())
+        pil = Image.fromarray(img_np)
+        pil = pil.resize(self.config.image_resize, Image.BILINEAR)
+        buf = io.BytesIO()
+        pil.save(buf, format="JPEG", quality=75)
+        return f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}" 
