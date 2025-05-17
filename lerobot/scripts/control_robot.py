@@ -141,6 +141,7 @@ from dataclasses import asdict
 from pprint import pformat
 
 import rerun as rr
+import numpy as np
 
 # from safetensors.torch import load_file, save_file
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
@@ -149,6 +150,7 @@ from lerobot.common.robot_devices.control_configs import (
     CalibrateControlConfig,
     ControlConfig,
     ControlPipelineConfig,
+    ExecutePolicyControlConfig,
     RecordControlConfig,
     RemoteRobotConfig,
     ReplayControlConfig,
@@ -272,7 +274,11 @@ def record(
         )
 
     # Load pretrained policy
-    policy = None if cfg.policy is None else make_policy(cfg.policy, ds_meta=dataset.meta)
+    # Instantiate policy. Gemini config is self-sufficient, so don't supply env/dataset.
+    if cfg.policy.type == "gemini":
+        policy = make_policy(cfg.policy)
+    else:
+        policy = make_policy(cfg.policy, ds_meta=None, env_cfg=None)
 
     if not robot.is_connected:
         robot.connect()
@@ -338,6 +344,140 @@ def record(
 
     log_say("Exiting", cfg.play_sounds)
     return dataset
+
+
+@safe_disconnect
+def execute_policy_on_robot(robot: Robot, cfg: ExecutePolicyControlConfig):
+    """Runs a given policy on the robot for a specified number of episodes/duration."""
+    if cfg.policy is None:
+        raise ValueError(
+            "A policy configuration must be provided for `execute_policy` mode. "
+            "Please specify it using `--control.policy.type=<type>` and other `--control.policy.*` arguments."
+        )
+
+    # Determine action_dim and observation_spec from the robot if possible,
+    # which might be needed by make_policy or the policy itself.
+    # This is a placeholder for a more robust way to get this. For GeminiPolicy,
+    # action_dim is taken from its own config, which should be set correctly by the user.
+    # robot_attrs = robot.metadata.get("robot_attributes", {})
+    # action_dim = robot_attrs.get("action_dim")
+    # obs_spec = robot_attrs.get("observation_space")
+
+    # For now, make_policy will rely on PreTrainedConfig having sufficient info (e.g., action_feature.shape)
+    # or defaults. GeminiPolicy has a default action_feature shape.
+    policy = make_policy(cfg.policy, ds_meta=None, env_cfg=None)
+    policy.eval() # Ensure policy is in evaluation mode
+
+    if not robot.is_connected:
+        robot.connect()
+
+    listener, events = init_keyboard_listener()
+
+    log_say(f"Starting policy execution for {cfg.num_episodes} episode(s).", cfg.play_sounds)
+
+    for episode_idx in range(cfg.num_episodes):
+        if events.get("stop_recording", False):  # Reuse stop_recording for general stop
+            log_say("Execution stopped by user.", cfg.play_sounds)
+            break
+
+        log_say(f"Starting episode {episode_idx + 1}/{cfg.num_episodes}", cfg.play_sounds)
+        policy.reset()
+
+        # A brief moment for manual preparation if needed
+        if episode_idx == 0 and cfg.num_episodes > 0 : # Only for the very first run
+            log_say("Robot will start moving in 3 seconds...", cfg.play_sounds, blocking=False)
+            time.sleep(3)
+
+        start_episode_time = time.perf_counter()
+        frame_count = 0
+        # Calculate max_frames based on episode_time_s and fps
+        # If fps is None, use robot.fps. If robot.fps is also None, this will be an issue.
+        # Assume robot.fps provides a fallback if cfg.fps is None.
+        current_fps = cfg.fps or getattr(robot, 'fps', 30) # Default to 30 if robot has no fps attr
+        if current_fps <= 0: current_fps = 30 # Ensure positive FPS
+
+        max_frames_from_time = float('inf')
+        if cfg.episode_time_s is not None and cfg.episode_time_s > 0:
+            max_frames_from_time = int(cfg.episode_time_s * current_fps)
+
+        while True:
+            if events.get("stop_recording", False) or events.get("exit_early", False):
+                if events.get("exit_early", False):
+                    log_say("Exiting episode early.", cfg.play_sounds)
+                    events["exit_early"] = False  # Reset for next episode
+                break
+
+            if frame_count >= max_frames_from_time:
+                log_say("Episode time limit reached.", cfg.play_sounds)
+                break
+
+            loop_start_time = time.perf_counter()
+
+            # GeminiPolicy does not use the observation in the batch for its prompt currently.
+            # It might be used for device placement by base classes.
+            # Passing an empty dict, assuming the policy handles it or doesn't need specific obs keys.
+            action_input_batch = {}
+            try:
+                action = policy.select_action(action_input_batch)
+            except Exception as e:
+                logging.error(f"Error during policy.select_action: {e}")
+                log_say("Error in policy, stopping episode.", cfg.play_sounds)
+                break # Stop this episode on policy error
+            
+            # Ensure action is a numpy array on CPU for the robot
+            if hasattr(action, 'cpu') and hasattr(action, 'numpy'):
+                robot_action = action.cpu().numpy()
+            elif isinstance(action, list):
+                 robot_action = np.array(action, dtype=np.float32)  # Gemini sometimes returns list of lists
+                 if robot_action.ndim == 2 and robot_action.shape[0] == 1:  # if it's [[...]]
+                     robot_action = robot_action.squeeze(0)
+            elif not isinstance(action, np.ndarray):
+                logging.error(f"Policy action type {type(action)} not directly usable by robot.send_action.")
+                log_say("Invalid action from policy, stopping episode.", cfg.play_sounds)
+                break
+            else:
+                robot_action = action # Assuming it's already a numpy array
+
+            # Ensure robot_action is a torch.Tensor (as expected by robot API)
+            import torch
+            if isinstance(robot_action, np.ndarray):
+                robot_action = torch.from_numpy(robot_action.astype(np.float32))
+            elif isinstance(robot_action, list):
+                robot_action = torch.tensor(robot_action, dtype=torch.float32)
+
+            try:
+                robot.send_action(robot_action)
+            except Exception as e:
+                logging.error(f"Error during robot.send_action: {e}")
+                log_say("Error sending action to robot, stopping episode.", cfg.play_sounds)
+                break # Stop this episode on robot error
+
+            if cfg.display_data and not is_headless():
+                if hasattr(robot, 'publish_to_rerun'):
+                    exec_dt = time.perf_counter() - loop_start_time
+                    # Minimal observation for logging, if available
+                    obs_for_rerun = robot.get_observation() if hasattr(robot, "get_observation") else None
+                    robot.publish_to_rerun(action=robot_action, observation=obs_for_rerun, exec_dt=exec_dt)
+
+            loop_dt_s = time.perf_counter() - loop_start_time
+            target_dt_s = 1.0 / current_fps
+            busy_wait(target_dt_s - loop_dt_s)
+
+            actual_dt_s = time.perf_counter() - loop_start_time
+            log_control_info(robot, actual_dt_s, fps=current_fps)
+            frame_count += 1
+        
+        # Brief pause or cleanup before next episode or exit
+        if robot.is_connected and hasattr(robot, 'teleop_safety_stop'):
+             robot.teleop_safety_stop() # Stop any lingering motion
+        time.sleep(0.5)
+
+    log_say("Policy execution finished.", cfg.play_sounds, blocking=True)
+    if listener is not None:
+        listener.stop()
+    # Final safety stop
+    if robot.is_connected and hasattr(robot, 'teleop_safety_stop'):
+        robot.teleop_safety_stop()
 
 
 @safe_disconnect
@@ -419,6 +559,9 @@ def control_robot(cfg: ControlPipelineConfig):
     elif isinstance(cfg.control, RecordControlConfig):
         _init_rerun(control_config=cfg.control, session_name="lerobot_control_loop_record")
         record(robot, cfg.control)
+    elif isinstance(cfg.control, ExecutePolicyControlConfig):
+        _init_rerun(control_config=cfg.control, session_name="lerobot_control_loop_execute_policy")
+        execute_policy_on_robot(robot, cfg.control)
     elif isinstance(cfg.control, ReplayControlConfig):
         replay(robot, cfg.control)
     elif isinstance(cfg.control, RemoteRobotConfig):

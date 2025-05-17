@@ -100,16 +100,44 @@ class RecordControlConfig(ControlConfig):
 @ControlConfig.register_subclass("replay")
 @dataclass
 class ReplayControlConfig(ControlConfig):
-    # Dataset identifier. By convention it should match '{hf_username}/{dataset_name}' (e.g. `lerobot/test`).
+    # Dataset identifier where the episode to replay is stored
+    # (e.g. `lerobot/aloha_sim_insertion_human`).
     repo_id: str
-    # Index of the episode to replay.
+    # Episode index to replay.
     episode: int
-    # Root directory where the dataset will be stored (e.g. 'dataset/path').
+    # Root directory where the dataset is stored (e.g. 'dataset/path').
     root: str | Path | None = None
     # Limit the frames per second. By default, uses the dataset fps.
     fps: int | None = None
     # Use vocal synthesis to read events.
     play_sounds: bool = True
+
+
+@ControlConfig.register_subclass("execute_policy")
+@dataclass
+class ExecutePolicyControlConfig(ControlConfig):
+    """Configuration for executing a policy on the robot without recording data."""
+    policy: PreTrainedConfig | None = None # Policy configuration (loaded with --control.policy.*)
+    num_episodes: int = 1  # Number of episodes to run
+    episode_time_s: float = 60.0  # Maximum duration of each episode in seconds
+    fps: int | None = None  # Target FPS for policy execution, defaults to robot's FPS
+    display_data: bool = False  # Whether to display data (e.g., in Rerun)
+    play_sounds: bool = True # Use vocal synthesis for events
+
+    def __post_init__(self):
+        # HACK: We parse again the cli args here to get the pretrained path if there was one.
+        # This is similar to RecordControlConfig to allow loading policy from path.
+        policy_path = parser.get_path_arg("control.policy")
+        if policy_path:
+            cli_overrides = parser.get_cli_overrides("control.policy")
+            self.policy = PreTrainedConfig.from_pretrained(policy_path, cli_overrides=cli_overrides)
+            self.policy.pretrained_path = policy_path
+        elif self.policy is None:
+            # Unlike RecordControlConfig, policy is not optional here in spirit,
+            # but make_policy will raise an error if cfg.policy is None.
+            # We could raise it here too, but deferring helps if loaded from YAML
+            # where `policy` key might be present but leads to None if empty.
+            pass
 
 
 @ControlConfig.register_subclass("remote_robot")

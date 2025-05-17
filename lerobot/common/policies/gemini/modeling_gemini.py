@@ -18,6 +18,7 @@ from typing import List
 
 import torch
 from torch import Tensor
+import numpy as np
 
 from lerobot.common.policies.pretrained import PreTrainedPolicy
 from lerobot.common.policies.gemini.configuration_gemini import GeminiConfig
@@ -51,9 +52,9 @@ class GeminiPolicy(PreTrainedPolicy):
                 "GeminiPolicy requires the `langchain_google_genai` package.  Install via `pip install langchain_google_genai`."
             )
 
-        api_key = os.getenv("GOOGLE_API_KEY")
+        api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
-            raise EnvironmentError("GOOGLE_API_KEY environment variable is not set – cannot authenticate with Gemini.")
+            raise EnvironmentError("GEMINI_API_KEY environment variable is not set – cannot authenticate with Gemini.")
 
         # Initialise the LangChain chat wrapper.
         self.llm = ChatGoogleGenerativeAI(model=config.model_name, api_key=api_key)
