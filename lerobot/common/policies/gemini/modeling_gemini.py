@@ -81,20 +81,25 @@ class GeminiPolicy(PreTrainedPolicy):
 
         # If we still have buffered actions, just pop and return.
         if self._action_queue:
-            return self._action_queue.popleft()
+            act = self._action_queue.popleft()
+            # guarantee (batch, action_dim)
+            if act.ndim == 1:
+                act = act.unsqueeze(0)
+            return act
 
         # Otherwise we need to query Gemini for the next *n_action_steps*.
         action_dim = self.config.action_feature.shape[0]
 
-        # ------------------------------------------------------------------
-        # Build multimodal content blocks for the user message
-        # ------------------------------------------------------------------
-        blocks = []
-        blocks.append({"type": "text", "text": self.config.prompt or "Provide joint targets."})
+        blocks: list[dict] = [{"type": "text", "text": self.config.prompt}]
 
         if self.config.include_state and "observation.state" in batch:
             joints = batch["observation.state"][0].tolist()
             blocks.append({"type": "text", "text": f"Current joint angles (deg): {joints}"})
+        
+        # For sim
+        if self.config.include_image and "observation.image" in batch:
+            img = batch["observation.image"][0]  # (C,H,W) float32
+            blocks.append({"type": "image_url", "image_url": self._img_to_url(img)})
 
         if self.config.include_image and "observation.images.top" in batch:
             img = batch["observation.images.top"][0]  # (C,H,W) float32
@@ -114,7 +119,11 @@ class GeminiPolicy(PreTrainedPolicy):
         # Push to queue and pop the first element to return.
         for act in actions:
             self._action_queue.append(act)
-        return self._action_queue.popleft()
+
+        act = self._action_queue.popleft()
+        if act.ndim == 1:
+            act = act.unsqueeze(0)
+        return act
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -123,10 +132,14 @@ class GeminiPolicy(PreTrainedPolicy):
     def _query_gemini(self, action_dim: int) -> str:
         """Send a prompt to Gemini and return the raw string response."""
 
+        w, h = self.config.image_resize  # width, height from config
         system_prompt = (
-            "You control a 6-DoF physical robot arm.  Respond ONLY with a JSON array of "
-            f"{self.config.n_action_steps} arrays, each containing {action_dim} numbers (joint target angles in degrees). "
-            "Safety: no individual joint angle may change by more than ±10 degrees from its current value in a single action step."
+            "You are controlling a puck-shaped agent in the MuJoCo Push environment (`PushCubeLoop-v0`). "
+            "The goal is to push a grey T so that its centre fully overlaps the green T target. "
+            f"Respond ONLY with a JSON array containing {self.config.n_action_steps} sub-arrays, each with {action_dim} floating-point numbers. ",
+            "start by moving down and to the right",
+            "always try moving towards the grey T",
+            "if you get stuck, move diagonally towards the center of the arena"
         )
 
         # `self._extra_blocks` is prepared in select_action

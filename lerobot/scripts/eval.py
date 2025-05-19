@@ -353,6 +353,7 @@ def eval_policy(
 
                 videos_dir.mkdir(parents=True, exist_ok=True)
                 video_path = videos_dir / f"eval_episode_{n_episodes_rendered}.mp4"
+                print(f"Saving video to {video_path}")
                 video_paths.append(str(video_path))
                 thread = threading.Thread(
                     target=write_video,
@@ -486,7 +487,7 @@ def eval_main(cfg: EvalPipelineConfig):
             env,
             policy,
             cfg.eval.n_episodes,
-            max_episodes_rendered=10,
+            max_episodes_rendered=300,
             videos_dir=Path(cfg.output_dir) / "videos",
             start_seed=cfg.seed,
         )

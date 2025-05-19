@@ -39,7 +39,11 @@ def get_device_from_parameters(module: nn.Module) -> torch.device:
 
     Note: assumes that all parameters have the same device
     """
-    return next(iter(module.parameters())).device
+    try:
+        return next(iter(module.parameters())).device
+    except StopIteration:
+        # Model without parameters (e.g., GeminiPolicy) – default to CPU
+        return torch.device("cpu")
 
 
 def get_dtype_from_parameters(module: nn.Module) -> torch.dtype:
@@ -47,7 +51,10 @@ def get_dtype_from_parameters(module: nn.Module) -> torch.dtype:
 
     Note: assumes that all parameters have the same dtype.
     """
-    return next(iter(module.parameters())).dtype
+    try:
+        return next(iter(module.parameters())).dtype
+    except StopIteration:
+        return torch.float32
 
 
 def get_output_shape(module: nn.Module, input_shape: tuple) -> tuple:

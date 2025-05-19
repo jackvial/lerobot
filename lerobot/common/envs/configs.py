@@ -80,6 +80,8 @@ class AlohaEnv(EnvConfig):
 class PushtEnv(EnvConfig):
     task: str = "PushT-v0"
     fps: int = 10
+    
+    # @TODO - it would be nice if episode_length was configurable
     episode_length: int = 300
     obs_type: str = "pixels_agent_pos"
     render_mode: str = "rgb_array"
@@ -115,6 +117,8 @@ class PushtEnv(EnvConfig):
             "visualization_height": self.visualization_height,
             "max_episode_steps": self.episode_length,
         }
+        
+    # todo - add a __str__ method to the class to use in the gemini prompt
 
 
 @EnvConfig.register_subclass("xarm")

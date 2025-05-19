@@ -24,7 +24,8 @@ class GeminiConfig(PreTrainedConfig):
 
     # Name of the Gemini model to call via the Google Generative-AI SDK or
     # `langchain_google_genai` wrapper.
-    model_name: str = "gemini-2.5-pro-preview-05-06"
+    # model_name: str = "gemini-2.5-pro-preview-05-06"
+    model_name: str = "gemini-2.5-flash-preview-04-17"
 
     # The high-level task instruction that will be passed to Gemini.
     prompt: str = ""
@@ -35,8 +36,8 @@ class GeminiConfig(PreTrainedConfig):
     # ------------------------------------------------------------------
     # Multimodal context flags
     # ------------------------------------------------------------------
-    include_image: bool = False   # send current single RGB frame
-    include_state: bool = False   # send current joint angles textually
+    include_image: bool = True   # send current single RGB frame
+    include_state: bool = True   # send current joint angles textually
     include_video: bool = False   # (future) send short clip instead of 1 frame
     max_video_frames: int = 20    # clip length when include_video
     image_resize: tuple[int, int] = (160, 120)  # WxH sent to Gemini
