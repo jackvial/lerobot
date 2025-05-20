@@ -150,6 +150,16 @@ class RemoteRobotConfig(ControlConfig):
     viewer_ip: str | None = None
     viewer_port: str | None = None
 
+@ControlConfig.register_subclass("gemini")
+@dataclass
+class GeminiControlConfig(ControlConfig):
+    log_interval: int = 100
+    # Display all cameras on screen
+    display_data: bool = False
+    # Rerun configuration for remote robot (https://ref.rerun.io/docs/python/0.22.1/common/initialization_functions/#rerun.connect_tcp)
+    viewer_ip: str | None = None
+    viewer_port: str | None = None
+
 
 @dataclass
 class ControlPipelineConfig:

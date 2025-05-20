@@ -1,15 +1,27 @@
 import os
-from google import genai
-from google.genai import types
+import google.generativeai as genai
+from google.generativeai import types
 from PIL import Image, ImageDraw
 import torch
 import numpy as np
 import json
 import time
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-client = genai.Client(api_key=GEMINI_API_KEY)
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+else:
+    raise ValueError("GEMINI_API_KEY not found in environment variables. Please set it to use the Gemini API.")
+
 MODEL_ID = "gemini-2.0-flash"  # Use Gemini 2.0 Flash for 3D capabilities
 PRO_MODEL_ID ='gemini-2.0-pro-exp-02-05'
+
+# Define system instructions here so it can be used by the model
+BOUNDING_BOX_SYSTEM_INSTRUCTIONS = """
+You are an expert at analyzing images to identify and locate objects.
+Return bounding boxes as a JSON array. Each object in the array should have a "label" (string) and "box_2d" (array of 4 numbers).
+The "box_2d" coordinates must be [ymin, xmin, ymax, xmax], normalized to a 0-1000 scale.
+Never return Python code fencing (```python ... ```) or general markdown fencing (``` ... ```) around the JSON. Only output the raw JSON array.
+If an object is present multiple times, name them uniquely (e.g., "red lego brick 1", "red lego brick 2") """
 
 def tensor_to_pil(tensor: torch.Tensor) -> Image.Image:
     """Convert a PyTorch tensor to PIL Image"""
@@ -39,12 +51,7 @@ def parse_json(json_output: str):
     
 def get_2D_bbox(img, prompt=None) -> str:
     """Prompts Gemini 2.0 Flash 2D bounding box."""
-    bounding_box_system_instructions = """
-    You are an expert at analyzing images to identify and locate objects.
-    Return bounding boxes as a JSON array. Each object in the array should have a "label" (string) and "box_2d" (array of 4 numbers).
-    The "box_2d" coordinates must be [ymin, xmin, ymax, xmax], normalized to a 0-1000 scale.
-    Never return Python code fencing (```python ... ```) or general markdown fencing (``` ... ```) around the JSON. Only output the raw JSON array.
-    If an object is present multiple times, name them uniquely (e.g., "red lego brick 1", "red lego brick 2") """
+    # bounding_box_system_instructions has been moved to the global scope
 
     if prompt is None:
         prompt = """Analyze the provided image. Detect all distinct lego bricks, small toys, and any items that could be considered a 'blue bin' or a 'yellow bin' present on the desk.
@@ -52,10 +59,10 @@ def get_2D_bbox(img, prompt=None) -> str:
         Return your findings strictly as a JSON array, following the format specified in the system instructions.
         Example of the expected JSON output format: [{"label": "blue lego brick", "box_2d": [100, 200, 150, 280]}, {"label": "yellow bin", "box_2d": [500, 600, 700, 850]}]"""
     
-    response = client.models.generate_content(
-        model=MODEL_ID,
+    model = genai.GenerativeModel(MODEL_ID, system_instruction=BOUNDING_BOX_SYSTEM_INSTRUCTIONS)
+    response = model.generate_content(
         contents=[img, prompt],
-        config=types.GenerateContentConfig(system_instruction=bounding_box_system_instructions, temperature=0.5),
+        generation_config=types.GenerationConfig(candidate_count=1, temperature=0.5),
     )
     return response.text
 

@@ -1,45 +1,49 @@
-
 import os
 import numpy as np
-import torch
-import pandas as pd
-from datetime import datetime
 import json
 import PIL
 import google.generativeai as genai
+from google.generativeai import types # Ensure types is imported correctly
+import draccus # Added import for draccus
+from dataclasses import dataclass, field # Added for AppConfig
+from typing import Optional, Dict, Any # Added for AppConfig
 # import rerun as rr
 # from faster_whisper import WhisperModel
 # import sounddevice as sd
-import numpy as np
-import os
+# import numpy as np
+# import os
 # from pydub import AudioSegment
-import io
+# import io
 
 from lerobot.common.robot_devices.cameras.configs import OpenCVCameraConfig
 from lerobot.common.robot_devices.robots.utils import make_robot_from_config
-from lerobot.common.robot_devices.robots.configs import KochRobotConfig
+from lerobot.common.robot_devices.robots.configs import KochRobotConfig, RobotConfig # Import RobotConfig for AppConfig
 #from scripts.image_utils import reorder_tensor_dimensions, tensor_to_pil, display_images
-from lerobot.common.utils.gemini_perception import tensor_to_pil, get_2D_bbox, parse_json, normalize_bbox_0to1, plot_bbox, get_target_bbox, get_random_targets, create_pick_place_lists
+from lerobot.common.utils.gemini_perception import tensor_to_pil, parse_json, normalize_bbox_0to1, plot_bbox, get_target_bbox, get_random_targets, create_pick_place_lists # get_2D_bbox is imported from here but overridden locally
+from lerobot.configs import parser
+from lerobot.common.robot_devices.control_configs import (
+    ControlPipelineConfig,
+    GeminiControlConfig
+)
 
-
-import os
-from google import genai
-from google.genai import types
+from lerobot.common.robot_devices.utils import busy_wait, safe_disconnect
+from lerobot.common.robot_devices.robots.utils import Robot, make_robot_from_config
 from PIL import Image, ImageDraw
-import torch
-import numpy as np
-import json
-import time
+# import torch
+# import numpy as np
+# import json
+# import time
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-client = genai.Client(api_key=GEMINI_API_KEY)
-MODEL_ID = "gemini-2.0-flash"  # Use Gemini 2.0 Flash for 3D capabilities
-PRO_MODEL_ID ='gemini-2.0-pro-exp-02-05'
+# GEMINI_API_KEY, client, MODEL_ID, PRO_MODEL_ID are removed as they are handled by the imported gemini_perception.py or defined locally in functions.
+# API key is configured by gemini_perception.py using genai.configure()
 
-
+# MODEL_ID can be defined globally if it's constant for this script's functions, or passed as an argument.
+# For now, let's assume MODEL_ID from gemini_perception.py can be used or redefine it if specific to this script.
+# We will use a local MODEL_ID for now to ensure these functions can define their own model if needed.
+LOCAL_MODEL_ID = "gemini-2.0-flash"
 
 def get_2Dbbox_grasp(img, prompt=None) -> str:
-    """Prompts Gemini 2.0 Flash 2D bounding box."""
+    """Prompts Gemini 2.0 Flash 2D bounding box with grasp points."""
     bounding_box_system_instructions = """
     You are an expert at analyzing images to identify and locate objects.
     Return bounding boxes as a JSON array. Each object in the array should have:
@@ -67,28 +71,31 @@ def get_2Dbbox_grasp(img, prompt=None) -> str:
             {"label": "yellow bin", "box_2d": [500, 600, 700, 850], "grasp_point": [600, 725], "grasp_angle": 0}
         ]"""
     
-    response = client.models.generate_content(
-        model=MODEL_ID,
+    model = genai.GenerativeModel(LOCAL_MODEL_ID, system_instruction=bounding_box_system_instructions)
+    response = model.generate_content(
         contents=[img, prompt],
-        config=types.GenerateContentConfig(system_instruction=bounding_box_system_instructions, temperature=0.5),
+        generation_config=types.GenerationConfig(candidate_count=1, temperature=0.5),
     )
     return response.text
 
 def get_3d_bbox(img, prompt=None) -> str:
-# Analyze the image using Gemini
+    """Prompts Gemini for 3D bounding box."""
+    # System instructions could be defined here if specific for 3D
+    three_d_system_instructions = """
+    You are an expert at 3D scene understanding.
+    Output a json list where each entry contains the object name in "label" and its 3D bounding box in "box_3d"
+    The 3D bounding box format should be [x_center, y_center, z_center, x_size, y_size, z_size, roll, pitch, yaw].
+    """
     if prompt is None:
         prompt = """
           Detect the 3D bounding boxes of no more than 10 items.
           Output a json list where each entry contains the object name in "label" and its 3D bounding box in "box_3d"
           The 3D bounding box format should be [x_center, y_center, z_center, x_size, y_size, z_size, roll, pitch, yaw].
         """
-    response = client.models.generate_content(
-        model=MODEL_ID,
-        contents=[
-            img,
-            prompt
-        ],
-        config = types.GenerateContentConfig(
+    model = genai.GenerativeModel(LOCAL_MODEL_ID, system_instruction=three_d_system_instructions) # Use system_instruction here
+    response = model.generate_content(
+        contents=[img, prompt],
+        generation_config = types.GenerationConfig( # Use types.GenerationConfig
             temperature=0.5
         )
     )
@@ -194,32 +201,8 @@ def plot_bbox_grasp(im_tensor, bbox, grasp_point=None, grasp_angle=0, label=None
 
     return img
 
-def main():
-   
-    # Create camera config using proper config objects
-    cameras = {
-        "front": OpenCVCameraConfig(
-            camera_index=0,  # Built-in webcam
-            fps=30,
-            width=640,
-            height=480
-        ),
-    #    "top": OpenCVCameraConfig(
-    #        camera_index=1,  # iPhone camera
-    #        fps=30,
-    #        width=640,
-    #        height=480
-    #    )
-    }
-
-    robot_cfg = KochRobotConfig(
-                cameras=cameras,
-                mock=False, 
-                robot_type="koch_robot"
-            )
-            
-    # Create and connect robot
-    robot = make_robot_from_config(robot_cfg)
+@safe_disconnect
+def gemini(robot: Robot, cfg: GeminiControlConfig):
     robot.connect()
 
 
@@ -244,5 +227,20 @@ def main():
 
     robot.disconnect()
 
+@parser.wrap()
+def control_robot(cfg: ControlPipelineConfig):
+    robot = make_robot_from_config(cfg.robot)
+
+    # TODO(Steven): Blueprint for fixed window size
+
+    if isinstance(cfg.control, GeminiControlConfig):
+        gemini(robot, cfg)
+
+    if robot.is_connected:
+        # Disconnect manually to avoid a "Core dump" during process
+        # termination due to camera threads not properly exiting.
+        robot.disconnect()
+
+
 if __name__ == "__main__":
-    main()
+    control_robot()
