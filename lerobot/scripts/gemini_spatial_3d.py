@@ -216,14 +216,17 @@ def gemini(robot: Robot, cfg: GeminiControlConfig):
 
     
 
-    plot_img = plot_bbox_grasp(observation["observation.images.top"], spatial_coords[0]["box_2d"], spatial_coords[0]["grasp_point"], spatial_coords[0]["grasp_angle"], spatial_coords[0]["label"])
+    object_img_0 = plot_bbox_grasp(observation["observation.images.top"], spatial_coords[0]["box_2d"], spatial_coords[0]["grasp_point"], spatial_coords[0]["grasp_angle"], spatial_coords[0]["label"])
     
-    # makedir
+    object_img_1 = plot_bbox_grasp(observation["observation.images.top"], spatial_coords[1]["box_2d"], spatial_coords[1]["grasp_point"], spatial_coords[1]["grasp_angle"], spatial_coords[1]["label"])
+   
+    
     os.makedirs("outputs/gemini_3d_spatial", exist_ok=True)
     
     # save the images to outputs
     img.save("outputs/gemini_3d_spatial/img.png")
-    plot_img.save("outputs/gemini_3d_spatial/plot_img.png")
+    object_img_0.save("outputs/gemini_3d_spatial/object_0.png")
+    object_img_1.save("outputs/gemini_3d_spatial/object_1.png")
 
     robot.disconnect()
 
