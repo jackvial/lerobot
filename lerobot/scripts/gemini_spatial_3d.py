@@ -1,13 +1,7 @@
 
-
 import os
-import re
-import cv2
-import matplotlib.pyplot as plt
-import time
 import numpy as np
 import torch
-import matplotlib.pyplot as plt
 import pandas as pd
 from datetime import datetime
 import json
@@ -25,7 +19,7 @@ from lerobot.common.robot_devices.cameras.configs import OpenCVCameraConfig
 from lerobot.common.robot_devices.robots.utils import make_robot_from_config
 from lerobot.common.robot_devices.robots.configs import KochRobotConfig
 #from scripts.image_utils import reorder_tensor_dimensions, tensor_to_pil, display_images
-from lerobot.common.vision_utils.gemini_perception import tensor_to_pil, get_2D_bbox, parse_json, normalize_bbox_0to1, plot_bbox, get_target_bbox, get_random_targets, create_pick_place_lists
+from lerobot.common.utils.gemini_perception import tensor_to_pil, get_2D_bbox, parse_json, normalize_bbox_0to1, plot_bbox, get_target_bbox, get_random_targets, create_pick_place_lists
 
 
 import os
