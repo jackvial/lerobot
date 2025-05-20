@@ -54,7 +54,7 @@ def get_2D_bbox(img, prompt=None) -> str:
     # bounding_box_system_instructions has been moved to the global scope
 
     if prompt is None:
-        prompt = """Analyze the provided image. Detect all distinct lego bricks, small toys, and any items that could be considered a 'blue bin' or a 'yellow bin' present on the desk.
+        prompt = """Analyze the provided image. Detect all distinct batteries, lego bricks, small toys, and any items that could be considered a 'blue bin' or a 'yellow bin' present on the desk.
         Ignore the robot arm itself if visible.
         Return your findings strictly as a JSON array, following the format specified in the system instructions.
         Example of the expected JSON output format: [{"label": "blue lego brick", "box_2d": [100, 200, 150, 280]}, {"label": "yellow bin", "box_2d": [500, 600, 700, 850]}]"""
