@@ -22,10 +22,19 @@ Examples of usage:
 - Unlimited teleoperation at a limited frequency of 30 Hz, to simulate data recording frequency.
   You can modify this value depending on how fast your simulation can run:
 ```bash
-python lerobot/scripts/control_robot.py teleoperate \
+python lerobot/scripts/control_sim_robot.py teleoperate \
     --fps 30 \
     --robot-path lerobot/configs/robot/your_robot_config.yaml \
     --sim-config lerobot/configs/env/your_sim_config.yaml
+```
+
+- Unlimited teleoperation with Koch arm using screwdriver attachment in simulation:
+```bash
+python lerobot/scripts/control_sim_robot.py teleoperate \
+    --robot-path lerobot/configs/robot/koch.yaml \
+    # Ensure your koch.yaml or overrides specify: gripper_mode: screwdriver
+    --sim-config lerobot/configs/env/your_sim_config.yaml \
+    --fps 30
 ```
 
 - Record one episode in order to test replay:

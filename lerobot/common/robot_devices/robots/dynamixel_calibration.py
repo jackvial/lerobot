@@ -55,7 +55,7 @@ def compute_nearest_rounded_position(position, models):
     return nearest_pos.astype(position.dtype)
 
 
-def run_arm_calibration(arm: MotorsBus, robot_type: str, arm_name: str, arm_type: str):
+def run_arm_calibration(arm: MotorsBus, robot_type: str, arm_name: str, arm_type: str, gripper_mode: str = "default"):
     """This function ensures that a neural network trained on data collected on a given robot
     can work on another robot. For instance before calibration, setting a same goal position
     for each motor of two different robots will get two very different positions. But after calibration,
@@ -93,8 +93,24 @@ def run_arm_calibration(arm: MotorsBus, robot_type: str, arm_name: str, arm_type
 
     # Compute homing offset so that `present_position + homing_offset ~= target_position`.
     zero_pos = arm.read("Present_Position")
-    zero_nearest_pos = compute_nearest_rounded_position(zero_pos, arm.motor_models)
-    homing_offset = zero_target_pos - zero_nearest_pos
+    
+    # If screwdriver mode, gripper calibration is skipped for position-based calculations
+    # Homing offset and drive mode for gripper will be dummy values (0)
+    # and calib_mode will be set to DEGREE (or could be a new mode like VELOCITY if needed for other logic)
+    is_screwdriver_gripper = gripper_mode == "screwdriver" and "gripper" in arm.motor_names
+    if is_screwdriver_gripper:
+        gripper_idx = arm.motor_names.index("gripper")
+        # Create masks for non-gripper and gripper motors
+        non_gripper_mask = np.ones(len(arm.motor_names), dtype=bool)
+        non_gripper_mask[gripper_idx] = False
+        gripper_mask = ~non_gripper_mask
+
+        # Calibrate non-gripper motors as usual
+        zero_nearest_pos_non_gripper = compute_nearest_rounded_position(zero_pos[non_gripper_mask], np.array(arm.motor_models)[non_gripper_mask])
+        homing_offset_non_gripper = zero_target_pos[non_gripper_mask] - zero_nearest_pos_non_gripper
+    else:
+        zero_nearest_pos = compute_nearest_rounded_position(zero_pos, arm.motor_models)
+        homing_offset = zero_target_pos - zero_nearest_pos
 
     # The rotated target position corresponds to a rotation of a quarter turn from the zero position.
     # This allows to identify the rotation direction of each motor.
@@ -112,12 +128,31 @@ def run_arm_calibration(arm: MotorsBus, robot_type: str, arm_name: str, arm_type
     # Find drive mode by rotating each motor by a quarter of a turn.
     # Drive mode indicates if the motor rotation direction should be inverted (=1) or not (=0).
     rotated_pos = arm.read("Present_Position")
-    drive_mode = (rotated_pos < zero_pos).astype(np.int32)
+    
+    if is_screwdriver_gripper:
+        drive_mode_non_gripper = (rotated_pos[non_gripper_mask] < zero_pos[non_gripper_mask]).astype(np.int32)
+        # Re-compute homing offset to take into account drive mode for non-gripper motors
+        rotated_drived_pos_non_gripper = apply_drive_mode(rotated_pos[non_gripper_mask], drive_mode_non_gripper)
+        rotated_nearest_pos_non_gripper = compute_nearest_rounded_position(rotated_drived_pos_non_gripper, np.array(arm.motor_models)[non_gripper_mask])
+        homing_offset_final_non_gripper = rotated_target_pos[non_gripper_mask] - rotated_nearest_pos_non_gripper
 
-    # Re-compute homing offset to take into account drive mode
-    rotated_drived_pos = apply_drive_mode(rotated_pos, drive_mode)
-    rotated_nearest_pos = compute_nearest_rounded_position(rotated_drived_pos, arm.motor_models)
-    homing_offset = rotated_target_pos - rotated_nearest_pos
+        # For the screwdriver gripper, set dummy/default values
+        homing_offset = np.zeros_like(homing_offset_non_gripper)
+        drive_mode = np.zeros_like(drive_mode_non_gripper)
+        
+        # Fill in the full arrays
+        final_homing_offset = np.zeros_like(zero_pos, dtype=float)
+        final_drive_mode = np.zeros_like(zero_pos, dtype=np.int32)
+        final_homing_offset[non_gripper_mask] = homing_offset_final_non_gripper
+        final_drive_mode[non_gripper_mask] = drive_mode_non_gripper
+        # Gripper homing_offset and drive_mode remain 0
+    else:
+        drive_mode = (rotated_pos < zero_pos).astype(np.int32)
+        # Re-compute homing offset to take into account drive mode
+        rotated_drived_pos = apply_drive_mode(rotated_pos, drive_mode)
+        rotated_nearest_pos = compute_nearest_rounded_position(rotated_drived_pos, arm.motor_models)
+        final_homing_offset = rotated_target_pos - rotated_nearest_pos
+        final_drive_mode = drive_mode
 
     print("\nMove arm to rest position")
     print("See: " + URL_TEMPLATE.format(robot=robot_type, arm=arm_type, position="rest"))
@@ -132,10 +167,16 @@ def run_arm_calibration(arm: MotorsBus, robot_type: str, arm_name: str, arm_type
         # Joints with linear motions (like gripper of Aloha) are expressed in nominal range of [0, 100]
         calib_idx = arm.motor_names.index("gripper")
         calib_mode[calib_idx] = CalibrationMode.LINEAR.name
+    elif is_screwdriver_gripper:
+        gripper_idx = arm.motor_names.index("gripper")
+        # For screwdriver, it's velocity controlled, so DEGREE/LINEAR don't quite fit.
+        # Using DEGREE as a placeholder, but it won't be used for position control.
+        # A new CalibrationMode.VELOCITY could be added if other parts of the system need to know.
+        calib_mode[gripper_idx] = CalibrationMode.DEGREE.name # Or a new VELOCITY mode
 
     calib_data = {
-        "homing_offset": homing_offset.tolist(),
-        "drive_mode": drive_mode.tolist(),
+        "homing_offset": final_homing_offset.tolist(),
+        "drive_mode": final_drive_mode.tolist(),
         "start_pos": zero_pos.tolist(),
         "end_pos": rotated_pos.tolist(),
         "calib_mode": calib_mode,

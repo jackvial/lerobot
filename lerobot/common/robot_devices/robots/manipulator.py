@@ -311,7 +311,10 @@ class ManipulatorRobot:
                 if self.robot_type in ["koch", "koch_bimanual", "aloha"]:
                     from lerobot.common.robot_devices.robots.dynamixel_calibration import run_arm_calibration
 
-                    calibration = run_arm_calibration(arm, self.robot_type, name, arm_type)
+                    current_gripper_mode = "default"
+                    if hasattr(self.config, 'gripper_mode'):
+                        current_gripper_mode = self.config.gripper_mode
+                    calibration = run_arm_calibration(arm, self.robot_type, name, arm_type, gripper_mode=current_gripper_mode)
 
                 elif self.robot_type in ["so100", "so101", "moss", "lekiwi"]:
                     from lerobot.common.robot_devices.robots.feetech_calibration import (
@@ -350,13 +353,17 @@ class ManipulatorRobot:
                 # 4 corresponds to Extended Position on Koch motors
                 arm.write("Operating_Mode", 4, all_motors_except_gripper)
 
-            # Use 'position control current based' for gripper to be limited by the limit of the current.
-            # For the follower gripper, it means it can grasp an object without forcing too much even tho,
-            # it's goal position is a complete grasp (both gripper fingers are ordered to join and reach a touch).
-            # For the leader gripper, it means we can use it as a physical trigger, since we can force with our finger
-            # to make it move, and it will move back to its original target position when we release the force.
-            # 5 corresponds to Current Controlled Position on Koch gripper motors "xl330-m077, xl330-m288"
-            arm.write("Operating_Mode", 5, "gripper")
+            if self.config.gripper_mode == "screwdriver":
+                # 1 corresponds to Velocity Control Mode (Wheel Mode)
+                arm.write("Operating_Mode", 1, "gripper")
+            else:
+                # Use 'position control current based' for gripper to be limited by the limit of the current.
+                # For the follower gripper, it means it can grasp an object without forcing too much even tho,
+                # it's goal position is a complete grasp (both gripper fingers are ordered to join and reach a touch).
+                # For the leader gripper, it means we can use it as a physical trigger, since we can force with our finger
+                # to make it move, and it will move back to its original target position when we release the force.
+                # 5 corresponds to Current Controlled Position on Koch gripper motors "xl330-m077, xl330-m288"
+                arm.write("Operating_Mode", 5, "gripper")
 
         for name in self.follower_arms:
             set_operating_mode_(self.follower_arms[name])
@@ -472,10 +479,51 @@ class ManipulatorRobot:
                 goal_pos = ensure_safe_goal_position(goal_pos, present_pos, self.config.max_relative_target)
 
             # Used when record_data=True
-            follower_goal_pos[name] = goal_pos
+            follower_goal_pos[name] = goal_pos.clone() #.clone() for screwdriver mode as it's modified
 
-            goal_pos = goal_pos.numpy().astype(np.float32)
-            self.follower_arms[name].write("Goal_Position", goal_pos)
+            goal_pos_numpy = goal_pos.numpy().astype(np.float32)
+
+            if self.config.gripper_mode == "screwdriver" and "gripper" in self.follower_arms[name].motor_names:
+                gripper_idx = self.follower_arms[name].motor_names.index("gripper")
+                # Example: Map leader gripper position (0-4095) to velocity (-1023 to 1023)
+                # TODO: Fine-tune this mapping based on your leader gripper range and desired screwdriver speed
+                # This is a placeholder, assuming leader gripper output is in raw steps (0-4095 for many dynamixels)
+                # and 0-2047 is reverse, 2048 is stop, 2049-4095 is forward.
+                # And that max velocity is 1023.
+                raw_leader_gripper_val = goal_pos_numpy[gripper_idx]
+                # Assuming 0-100 from calibration mapping
+                # Convert to a -1 to 1 range, assuming 50 is neutral
+                normalized_leader_gripper = (raw_leader_gripper_val - 50) / 50.0
+                
+                # Max velocity can be obtained from motor's control table, e.g., "Velocity_Limit" (1023 for many XL series)
+                # For XL330, default Profile Velocity (112) is 1023 (0.229 rpm/unit * 0.111 rpm = 2.54 cm/s)
+                # Let's use a fraction of max velocity for safety, e.g. 50%
+                max_velocity_prop = 0.5 
+                # Check motor specs for actual max velocity value (e.g., 1023 for XL-330 in RPM mode if using Profile Velocity)
+                # If your motor_model has a max_velocity attribute or similar:
+                # max_motor_velocity = self.follower_arms[name].motors_by_name["gripper"].config.control_table["Velocity_Limit"]["Max"]
+                # For now, let's assume a common max like 1023 for velocity control.
+                # max_motor_velocity = self.follower_arms[name].motors_by_name["gripper"].config.control_table["Velocity_Limit"]["Max"]
+                target_velocity = int(normalized_leader_gripper * 1023 * max_velocity_prop)
+
+
+                # Ensure target_velocity is within the valid range for 'Goal_Velocity'
+                # For XL-330, 'Velocity Limit' (Address 44) determines the max velocity (0 ~ 1023)
+                # Let's clamp to a safe range, e.g. +/- 500, adjust as needed
+                target_velocity = np.clip(target_velocity, -500, 500).astype(np.int32)
+                
+                self.follower_arms[name].write("Goal_Velocity", target_velocity, "gripper")
+                # We've handled the gripper, so skip writing Goal_Position for it later
+                # We still send other joint positions via Goal_Position
+                gripper_only_mask = np.array([m_name == "gripper" for m_name in self.follower_arms[name].motor_names])
+                other_motors_mask = ~gripper_only_mask
+                
+                if np.any(other_motors_mask):
+                    self.follower_arms[name].write("Goal_Position", goal_pos_numpy[other_motors_mask], np.array(self.follower_arms[name].motor_names)[other_motors_mask].tolist())
+
+            else:
+                self.follower_arms[name].write("Goal_Position", goal_pos_numpy)
+            
             self.logs[f"write_follower_{name}_goal_pos_dt_s"] = time.perf_counter() - before_fwrite_t
 
         # Early exit when recording data is not requested

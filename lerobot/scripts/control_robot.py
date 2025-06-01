@@ -39,6 +39,14 @@ python lerobot/scripts/control_robot.py \
     --control.type=teleoperate
 ```
 
+- Unlimited teleoperation with Koch arm using screwdriver attachment:
+```bash
+python lerobot/scripts/control_robot.py \
+    --robot.type=koch \
+    --robot.gripper_mode=screwdriver \
+    --control.type=teleoperate
+```
+
 - Unlimited teleoperation at a limited frequency of 30 Hz, to simulate data recording frequency:
 ```bash
 python lerobot/scripts/control_robot.py \

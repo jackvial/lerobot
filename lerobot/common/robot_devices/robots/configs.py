@@ -216,6 +216,7 @@ class KochRobotConfig(ManipulatorRobotConfig):
     # Set this to a positive scalar to have the same value for all motors, or a list that is the same length as
     # the number of motors in your follower arms.
     max_relative_target: int | None = None
+    gripper_mode: str = "default"  # "default" or "screwdriver"
 
     leader_arms: dict[str, MotorsBusConfig] = field(
         default_factory=lambda: {
@@ -284,6 +285,7 @@ class KochBimanualRobotConfig(ManipulatorRobotConfig):
     # Set this to a positive scalar to have the same value for all motors, or a list that is the same length as
     # the number of motors in your follower arms.
     max_relative_target: int | None = None
+    gripper_mode: str = "default"  # "default" or "screwdriver"
 
     leader_arms: dict[str, MotorsBusConfig] = field(
         default_factory=lambda: {
