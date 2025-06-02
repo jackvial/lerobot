@@ -483,6 +483,7 @@ class ManipulatorRobot:
 
             goal_pos_numpy = goal_pos.numpy().astype(np.float32)
 
+            # TODO - the leader gripper should be able to move the screw driver in either direction
             if self.config.gripper_mode == "screwdriver" and "gripper" in self.follower_arms[name].motor_names:
                 gripper_idx = self.follower_arms[name].motor_names.index("gripper")
                 # Example: Map leader gripper position (0-4095) to velocity (-1023 to 1023)
@@ -494,6 +495,8 @@ class ManipulatorRobot:
                 # Assuming 0-100 from calibration mapping
                 # Convert to a -1 to 1 range, assuming 50 is neutral
                 normalized_leader_gripper = (raw_leader_gripper_val - 50) / 50.0
+                # Invert the direction by multiplying by -1
+                normalized_leader_gripper = -normalized_leader_gripper
                 
                 # Max velocity can be obtained from motor's control table, e.g., "Velocity_Limit" (1023 for many XL series)
                 # For XL330, default Profile Velocity (112) is 1023 (0.229 rpm/unit * 0.111 rpm = 2.54 cm/s)
