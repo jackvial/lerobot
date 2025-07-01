@@ -65,12 +65,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import requests
-from flask import Flask, redirect, render_template, request, url_for
+from flask import Flask, redirect, render_template, request, url_for, jsonify
 
 from lerobot import available_datasets
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.common.datasets.utils import IterableNamespace
 from lerobot.common.utils.utils import init_logging
+from lerobot.common.datasets.push_dataset_to_hub.utils import check_repo_id
 
 
 def run_server(
@@ -224,6 +225,44 @@ def run_server(
             ignored_columns=ignored_columns,
         )
 
+    @app.route("/create_dataset", methods=["POST"])
+    def create_dataset():
+        try:
+            data = request.json
+            original_repo_id = data.get("original_repo_id")
+            new_repo_id = data.get("new_repo_id")
+            selected_episodes = data.get("selected_episodes", [])
+
+            if not original_repo_id or not new_repo_id or not selected_episodes:
+                return jsonify({"error": "Missing required parameters"}), 400
+
+            # Validate new repo_id format
+            try:
+                check_repo_id(new_repo_id)
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+
+            # Create new dataset from selected episodes
+            success = create_dataset_from_episodes(
+                original_repo_id=original_repo_id,
+                new_repo_id=new_repo_id,
+                selected_episodes=selected_episodes,
+                dataset=dataset
+            )
+
+            if success:
+                return jsonify({
+                    "success": True,
+                    "new_repo_id": new_repo_id,
+                    "message": f"Dataset created successfully with {len(selected_episodes)} episodes"
+                })
+            else:
+                return jsonify({"error": "Failed to create dataset"}), 500
+
+        except Exception as e:
+            logging.error(f"Error creating dataset: {str(e)}", exc_info=True)
+            return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+
     app.run(host=host, port=port)
 
 
@@ -337,6 +376,252 @@ def get_dataset_info(repo_id: str) -> IterableNamespace:
     dataset_info = response.json()
     dataset_info["repo_id"] = repo_id
     return IterableNamespace(dataset_info)
+
+
+def create_dataset_from_episodes(
+    original_repo_id: str,
+    new_repo_id: str,
+    selected_episodes: list[int],
+    dataset: LeRobotDataset | None = None
+) -> bool:
+    """
+    Create a new LeRobotDataset from selected episodes of an existing dataset.
+    
+    Args:
+        original_repo_id: Repository ID of the original dataset
+        new_repo_id: Repository ID for the new dataset
+        selected_episodes: List of episode indices to include in the new dataset
+        dataset: Existing dataset instance (optional, will load if not provided)
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        # Load the original dataset if not provided
+        if dataset is None:
+            logging.info(f"Loading original dataset: {original_repo_id}")
+            dataset = LeRobotDataset(original_repo_id)
+        
+        # Sort selected episodes to maintain order
+        selected_episodes = sorted(selected_episodes)
+        
+        logging.info(f"Creating new dataset '{new_repo_id}' from {len(selected_episodes)} episodes")
+        
+        # Create a filtered dataset with only the selected episodes
+        # This leverages the existing episode filtering functionality
+        filtered_dataset = LeRobotDataset(
+            repo_id=original_repo_id,
+            episodes=selected_episodes
+        )
+        
+        # Simple approach: use the push_to_hub functionality directly
+        # by temporarily changing the repo_id
+        logging.info(f"Copying filtered dataset to new repo: {new_repo_id}")
+        
+        # Update the filtered dataset's repo_id and push it
+        # This is much simpler than recreating everything manually
+        old_repo_id = filtered_dataset.repo_id
+        filtered_dataset.repo_id = new_repo_id
+        filtered_dataset.meta.repo_id = new_repo_id
+        
+        # Update episode indices to be sequential (0, 1, 2, ...)
+        # This is important for the new dataset structure
+        episode_remapping = {}
+        for new_idx, old_episode_idx in enumerate(selected_episodes):
+            episode_remapping[old_episode_idx] = new_idx
+        
+        # Create new root directory for the dataset
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir) / new_repo_id.replace("/", "_")
+            temp_root.mkdir(parents=True, exist_ok=True)
+            (temp_root / "meta").mkdir(parents=True, exist_ok=True)
+            
+            # Save the filtered dataset to the temporary location
+            old_root = filtered_dataset.root
+            filtered_dataset.root = temp_root
+            filtered_dataset.meta.root = temp_root
+            
+            # Update metadata for the new dataset
+            filtered_dataset.meta.info["total_episodes"] = len(selected_episodes)
+            filtered_dataset.meta.info["splits"] = {"train": f"0:{len(selected_episodes)}"}
+            
+            # Re-index episodes to be sequential
+            new_episodes = {}
+            new_episode_stats = {}
+            
+            for new_idx, old_episode_idx in enumerate(selected_episodes):
+                if old_episode_idx in filtered_dataset.meta.episodes:
+                    episode_data = filtered_dataset.meta.episodes[old_episode_idx].copy()
+                    episode_data["episode_index"] = new_idx
+                    new_episodes[new_idx] = episode_data
+                
+                if old_episode_idx in filtered_dataset.meta.episodes_stats:
+                    new_episode_stats[new_idx] = filtered_dataset.meta.episodes_stats[old_episode_idx]
+            
+            filtered_dataset.meta.episodes = new_episodes
+            filtered_dataset.meta.episodes_stats = new_episode_stats
+            
+            # Update the HuggingFace dataset episode indices
+            def update_episode_index(example):
+                old_ep_idx = example["episode_index"]
+                if old_ep_idx in episode_remapping:
+                    example["episode_index"] = episode_remapping[old_ep_idx]
+                return example
+            
+            # Apply the episode index remapping
+            filtered_dataset.hf_dataset = filtered_dataset.hf_dataset.map(update_episode_index)
+            
+            # Recalculate episode data index
+            from lerobot.common.datasets.utils import get_episode_data_index
+            filtered_dataset.episode_data_index = get_episode_data_index(
+                filtered_dataset.meta.episodes, 
+                list(range(len(selected_episodes)))
+            )
+            
+            # Write all metadata files to ensure they exist
+            from lerobot.common.datasets.utils import (
+                write_info, write_json, append_jsonlines
+            )
+            
+            # Fix the data and video paths to match expected structure
+            filtered_dataset.meta.info["data_path"] = "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet"
+            if len(filtered_dataset.meta.video_keys) > 0:
+                filtered_dataset.meta.info["video_path"] = "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4"
+            
+            # Update total_frames to match the filtered dataset
+            total_frames = sum(episode_data["length"] for episode_data in filtered_dataset.meta.episodes.values())
+            filtered_dataset.meta.info["total_frames"] = total_frames
+            
+            # Write info.json
+            write_info(filtered_dataset.meta.info, temp_root)
+            
+            # Write tasks.jsonl - this was missing!
+            tasks_path = temp_root / "meta" / "tasks.jsonl"
+            if tasks_path.exists():
+                tasks_path.unlink()  # Remove existing file
+            for task_index, task in filtered_dataset.meta.tasks.items():
+                task_dict = {"task_index": task_index, "task": task}
+                append_jsonlines(task_dict, tasks_path)
+            
+            # Write episodes.jsonl
+            episodes_path = temp_root / "meta" / "episodes.jsonl"
+            if episodes_path.exists():
+                episodes_path.unlink()  # Remove existing file
+            for episode_index, episode_data in filtered_dataset.meta.episodes.items():
+                append_jsonlines(episode_data, episodes_path)
+            
+            # Write episodes_stats.jsonl
+            from lerobot.common.datasets.utils import write_episode_stats
+            for episode_index, episode_stats in filtered_dataset.meta.episodes_stats.items():
+                write_episode_stats(episode_index, episode_stats, temp_root)
+            
+            # Save the filtered HuggingFace dataset files with chunk structure
+            logging.info("Saving dataset files...")
+            for episode_idx in range(len(selected_episodes)):
+                from_idx = filtered_dataset.episode_data_index["from"][episode_idx]
+                to_idx = filtered_dataset.episode_data_index["to"][episode_idx]
+                
+                # Get the episode data
+                episode_data = filtered_dataset.hf_dataset.select(range(from_idx, to_idx))
+                
+                # Save as parquet file with chunk structure
+                chunk_idx = episode_idx // filtered_dataset.meta.info["chunks_size"]
+                data_dir = temp_root / "data" / f"chunk-{chunk_idx:03d}"
+                data_dir.mkdir(parents=True, exist_ok=True)
+                
+                episode_file = data_dir / f"episode_{episode_idx:06d}.parquet"
+                episode_data.to_parquet(episode_file)
+            
+            # Copy video files if they exist with chunk structure
+            if len(filtered_dataset.meta.video_keys) > 0:
+                logging.info("Copying video files...")
+                import shutil
+                for new_idx, old_episode_idx in enumerate(selected_episodes):
+                    chunk_idx = new_idx // filtered_dataset.meta.info["chunks_size"]
+                    for video_key in filtered_dataset.meta.video_keys:
+                        # Get original video path
+                        old_video_path = filtered_dataset.meta.get_video_file_path(old_episode_idx, video_key)
+                        old_full_path = old_root / old_video_path
+                        
+                        # New video path with chunk structure
+                        new_video_dir = temp_root / "videos" / f"chunk-{chunk_idx:03d}" / video_key
+                        new_video_dir.mkdir(parents=True, exist_ok=True)
+                        new_full_path = new_video_dir / f"episode_{new_idx:06d}.mp4"
+                        
+                        if old_full_path.exists():
+                            shutil.copy2(old_full_path, new_full_path)
+                        else:
+                            logging.warning(f"Video file not found: {old_full_path}")
+            
+            # Create README.md with proper dataset card
+            logging.info("Creating README.md with dataset card...")
+            import json
+            readme_content = f"""---
+license: apache-2.0
+task_categories:
+- robotics
+tags:
+- LeRobot
+configs:
+- config_name: default
+  data_files: data/*/*.parquet
+---
+
+This dataset was created using [LeRobot](https://github.com/huggingface/lerobot).
+
+## Dataset Description
+
+- **Homepage:** [More Information Needed]
+- **Paper:** [More Information Needed]
+- **License:** apache-2.0
+
+## Dataset Structure
+
+[meta/info.json](meta/info.json):
+```json
+{json.dumps(filtered_dataset.meta.info, indent=4)}
+```
+
+## Citation
+
+**BibTeX:**
+
+```bibtex
+[More Information Needed]
+```
+"""
+            
+            readme_path = temp_root / "README.md"
+            with open(readme_path, "w") as f:
+                f.write(readme_content)
+            
+            # Push to hub with custom README (don't auto-generate card)
+            logging.info(f"Pushing new dataset to hub: {new_repo_id}")
+            filtered_dataset.push_to_hub(
+                license="apache-2.0",
+                tags=["LeRobot", "robotics"],
+                # Custom dataset card parameters - this should prevent auto-generation
+                dataset_name=new_repo_id.split("/")[-1],
+                robot_type=filtered_dataset.meta.robot_type or "unknown"
+            )
+        
+        # Clear local cache for the new dataset so it can be loaded fresh
+        from lerobot.common.constants import HF_LEROBOT_HOME
+        import shutil
+        new_dataset_cache = HF_LEROBOT_HOME / new_repo_id
+        if new_dataset_cache.exists():
+            logging.info(f"Clearing local cache for new dataset: {new_dataset_cache}")
+            shutil.rmtree(new_dataset_cache)
+        
+        logging.info(f"Successfully created dataset '{new_repo_id}' with {len(selected_episodes)} episodes")
+        logging.info(f"Dataset is now available at: https://huggingface.co/datasets/{new_repo_id}")
+        logging.info(f"You can now load it with: python lerobot/scripts/visualize_dataset_html.py --repo-id {new_repo_id}")
+        return True
+        
+    except Exception as e:
+        logging.error(f"Failed to create dataset from episodes: {str(e)}", exc_info=True)
+        return False
 
 
 def visualize_dataset_html(

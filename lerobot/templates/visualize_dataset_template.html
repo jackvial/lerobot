@@ -41,9 +41,13 @@
         <div class="ml-2 hidden md:block" x-data="episodePagination">
             <ul>
                 <template x-for="episode in paginatedEpisodes" :key="episode">
-                    <li class="font-mono text-sm mt-0.5">
+                    <li class="font-mono text-sm mt-0.5 flex items-center gap-2">
+                        <input type="checkbox" 
+                               :id="'episode-' + episode" 
+                               :checked="selectedEpisodes.includes(episode)"
+                               @change="toggleEpisodeSelection(episode)">
                         <a :href="'episode_' + episode"
-                           :class="{'underline': true, 'font-bold -ml-1': episode == {{ episode_id }}}"
+                           :class="{'underline': true, 'font-bold': episode == {{ episode_id }}}"
                            x-text="'Episode ' + episode"></a>
                     </li>
                 </template>
@@ -64,6 +68,21 @@
                     Next &raquo;
                 </button>
             </div>
+
+            <!-- Episode selection controls -->
+            <div class="mt-4 text-xs">
+                <div class="flex gap-2 mb-2">
+                    <button @click="selectAllEpisodes()" 
+                            class="px-2 py-1 bg-blue-600 text-white rounded text-xs">
+                        Select All
+                    </button>
+                    <button @click="deselectAllEpisodes()" 
+                            class="px-2 py-1 bg-gray-600 text-white rounded text-xs">
+                        Deselect All
+                    </button>
+                </div>
+                <p class="text-gray-400" x-text="`${selectedEpisodes.length} of ${episodes.length} episodes selected`"></p>
+            </div>
         </div>
 
         <!-- episodes menu for small screens -->
@@ -74,13 +93,20 @@
                     :disabled="page === 1">&laquo;</button>
             <div class="flex">
                 <template x-for="(episode, index) in paginatedEpisodes" :key="episode">
-                    <p class="font-mono text-sm mt-0.5 px-2"
-                       :class="{
-                           'font-bold': episode == {{ episode_id }},
-                           'border-r': index !== paginatedEpisodes.length - 1
-                       }">
-                        <a :href="'episode_' + episode" x-text="episode"></a>
-                    </p>
+                    <div class="flex items-center gap-1 px-2"
+                         :class="{
+                             'font-bold': episode == {{ episode_id }},
+                             'border-r': index !== paginatedEpisodes.length - 1
+                         }">
+                        <input type="checkbox" 
+                               :id="'episode-small-' + episode" 
+                               :checked="selectedEpisodes.includes(episode)"
+                               @change="toggleEpisodeSelection(episode)"
+                               class="text-xs">
+                        <a :href="'episode_' + episode" 
+                           x-text="episode" 
+                           class="font-mono text-sm"></a>
+                    </div>
                 </template>
             </div>
             <button @click="nextPage()"
@@ -88,6 +114,8 @@
                     :class="{'opacity-50 cursor-not-allowed': page === totalPages}"
                     :disabled="page === totalPages">&raquo; </button>
         </div>
+
+
 
     </div>
 
@@ -98,7 +126,7 @@
     </button>
 
     <!-- Content -->
-    <div class="max-h-screen flex flex-col gap-4 overflow-y-auto md:flex-1">
+    <div class="max-h-screen flex flex-col gap-4 overflow-y-auto md:flex-1 pb-32">
         <h1 class="text-xl font-bold mt-4 font-mono">
             Episode {{ episode_id }}
         </h1>
@@ -279,6 +307,39 @@
         </div>
     </div>
 
+    <!-- Fixed Create Dataset Form at Bottom -->
+    <div class="fixed bottom-0 left-0 right-0 bg-slate-900 border-t border-slate-600 p-4 shadow-lg z-50">
+        <div class="max-w-7xl mx-auto">
+            <div class="flex flex-col md:flex-row items-start md:items-center gap-4">
+                <div class="flex-1">
+                    <label for="new-dataset-name-fixed" class="block text-sm font-medium mb-1">Create New Dataset:</label>
+                    <input type="text" 
+                           id="new-dataset-name-fixed" 
+                           x-model="newDatasetName"
+                           placeholder="e.g., username/my-edited-dataset"
+                           class="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div class="flex items-center gap-3">
+                    <button @click="createDataset()" 
+                            :disabled="!newDatasetName.trim() || isCreatingDataset"
+                            class="px-4 py-2 bg-green-600 text-white rounded font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 whitespace-nowrap">
+                        <span x-show="!isCreatingDataset">Create Dataset</span>
+                        <span x-show="isCreatingDataset" class="flex items-center gap-2">
+                            <svg class="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 714 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            Creating...
+                        </span>
+                    </button>
+                </div>
+            </div>
+            <div x-show="creationStatus" class="mt-2 text-sm p-2 rounded" :class="creationStatus.type === 'success' ? 'bg-green-800 text-green-200' : 'bg-red-800 text-red-200'">
+                <span x-text="creationStatus.message"></span>
+            </div>
+        </div>
+    </div>
+
     <script>
         const parentOrigin = "https://huggingface.co";
         const searchParams = new URLSearchParams();
@@ -306,6 +367,9 @@
                 videosKeys: {{ videos_info | map(attribute='filename') | list | tojson }},
                 videosKeysSelected: [],
                 columns: {{ columns | tojson }},
+                newDatasetName: '',
+                isCreatingDataset: false,
+                creationStatus: null,
 
                 // alpine initialization
                 init() {
@@ -475,6 +539,78 @@
                         // start autoplay all videos in sync
                         this.$refs.btnPlay.click();
                     }
+                },
+
+                toggleEpisodeSelection(episode) {
+                    if (this.selectedEpisodes.includes(episode)) {
+                        this.selectedEpisodes = this.selectedEpisodes.filter(e => e !== episode);
+                    } else {
+                        this.selectedEpisodes.push(episode);
+                    }
+                },
+
+                selectAllEpisodes() {
+                    this.selectedEpisodes = [...{{ episodes }}];
+                },
+
+                deselectAllEpisodes() {
+                    this.selectedEpisodes = [];
+                },
+
+                async createDataset() {
+                    this.isCreatingDataset = true;
+                    this.creationStatus = null;
+
+                    // Get selectedEpisodes from the episodePagination component
+                    const paginationComponent = Alpine.$data(document.querySelector('[x-data="episodePagination"]'));
+                    const selectedEpisodes = paginationComponent ? paginationComponent.selectedEpisodes : [];
+
+                    if (selectedEpisodes.length === 0) {
+                        this.creationStatus = { 
+                            type: 'error', 
+                            message: 'Please select at least one episode' 
+                        };
+                        this.isCreatingDataset = false;
+                        return;
+                    }
+
+                    try {
+                        const response = await fetch('/create_dataset', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({
+                                original_repo_id: '{{ dataset_info.repo_id }}',
+                                new_repo_id: this.newDatasetName.trim(),
+                                selected_episodes: selectedEpisodes
+                            })
+                        });
+
+                        const result = await response.json();
+                        
+                        if (response.ok) {
+                            this.creationStatus = { 
+                                type: 'success', 
+                                message: `Dataset created successfully! New dataset: ${result.new_repo_id}` 
+                            };
+                            this.newDatasetName = '';
+                            // Reset selected episodes through the pagination component and clear localStorage
+                            if (paginationComponent) {
+                                paginationComponent.selectedEpisodes = [];
+                                paginationComponent.saveSelectedEpisodes();
+                            }
+                        } else {
+                            throw new Error(result.error || 'Failed to create dataset');
+                        }
+                    } catch (error) {
+                        this.creationStatus = { 
+                            type: 'error', 
+                            message: `Error: ${error.message}` 
+                        };
+                    } finally {
+                        this.isCreatingDataset = false;
+                    }
                 }
             };
         }
@@ -485,8 +621,28 @@
                 episodes: {{ episodes }},
                 pageSize: 100,
                 page: 1,
+                selectedEpisodes: [],
 
                 init() {
+                    // Restore selected episodes from localStorage
+                    const datasetId = '{{ dataset_info.repo_id }}';
+                    const storageKey = `lerobot_selected_episodes_${datasetId.replace('/', '_')}`;
+                    const saved = localStorage.getItem(storageKey);
+                    
+                    if (saved) {
+                        try {
+                            this.selectedEpisodes = JSON.parse(saved);
+                            // Ensure only valid episodes are selected
+                            this.selectedEpisodes = this.selectedEpisodes.filter(ep => this.episodes.includes(ep));
+                        } catch (e) {
+                            console.warn('Failed to parse saved episodes:', e);
+                            this.selectedEpisodes = [...this.episodes]; // Default to all selected
+                        }
+                    } else {
+                        // Default to all episodes selected
+                        this.selectedEpisodes = [...this.episodes];
+                    }
+
                     // Find which page contains the current episode_id
                     const currentEpisodeId = {{ episode_id }};
                     const episodeIndex = this.episodes.indexOf(currentEpisodeId);
@@ -515,6 +671,31 @@
                     if (this.page > 1) {
                         this.page--;
                     }
+                },
+
+                toggleEpisodeSelection(episode) {
+                    if (this.selectedEpisodes.includes(episode)) {
+                        this.selectedEpisodes = this.selectedEpisodes.filter(e => e !== episode);
+                    } else {
+                        this.selectedEpisodes.push(episode);
+                    }
+                    this.saveSelectedEpisodes();
+                },
+
+                selectAllEpisodes() {
+                    this.selectedEpisodes = [...this.episodes];
+                    this.saveSelectedEpisodes();
+                },
+
+                deselectAllEpisodes() {
+                    this.selectedEpisodes = [];
+                    this.saveSelectedEpisodes();
+                },
+
+                saveSelectedEpisodes() {
+                    const datasetId = '{{ dataset_info.repo_id }}';
+                    const storageKey = `lerobot_selected_episodes_${datasetId.replace('/', '_')}`;
+                    localStorage.setItem(storageKey, JSON.stringify(this.selectedEpisodes));
                 }
             }));
         });
