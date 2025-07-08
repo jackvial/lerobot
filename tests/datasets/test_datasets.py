@@ -450,6 +450,68 @@ def test_flatten_unflatten_dict():
     # test equality between nested dicts
     assert json.dumps(original_d, sort_keys=True) == json.dumps(d, sort_keys=True), f"{original_d} != {d}"
 
+def test_filtered_episodes_data_integrity(tmp_path, empty_lerobot_dataset_factory):
+    """Test that filtering episodes maintains correct data access and temporal context."""
+    
+    # Create a dataset without videos to avoid missing file issues
+    features = {"state": {"dtype": "float32", "shape": (2,), "names": ["x", "y"]}}
+    
+    # Step 1: Create and populate a dataset with multiple episodes
+    full_dataset = empty_lerobot_dataset_factory(root=tmp_path / "test", features=features)
+    
+    # Create episodes 0, 1, 2, 3, 4 to simulate a larger dataset
+    episode_data = {}
+    for ep_idx in range(5):
+        for frame_idx in range(20):  # 20 frames per episode
+            frame_data = {"state": np.array([ep_idx + frame_idx * 0.1, frame_idx * 0.1], dtype=np.float32)}
+            full_dataset.add_frame(frame_data, task=f"Task {ep_idx}")
+        full_dataset.save_episode()
+        # Store the episode data for later verification
+        episode_data[ep_idx] = {"task": f"Task {ep_idx}", "frames": 20}
+    
+    # Step 2: Create a filtered dataset that selects non-sequential episodes [1, 3, 4]
+    filtered_episodes = [1, 3, 4]
+    filtered_dataset = LeRobotDataset(
+        repo_id=full_dataset.repo_id,
+        root=full_dataset.root,
+        episodes=filtered_episodes,
+        delta_timestamps={"state": [-0.1, 0.0, 0.1]},  # This triggers _get_query_indices where the bug occurs
+    )
+    
+    # Test that the episode mapping is working correctly
+    assert filtered_dataset.episodes == filtered_episodes
+    assert filtered_dataset.num_episodes == len(filtered_episodes)
+    
+    # Test 1: Basic data access should work with our index mapping fix
+    item = filtered_dataset[0]  # This should be the first frame of episode 1
+    ep_idx = item["episode_index"].item()
+    assert ep_idx in filtered_episodes, f"Got episode {ep_idx}, expected one of {filtered_episodes}"
+    assert ep_idx == 1, f"First item should be from episode 1, got {ep_idx}"
+    
+    # Test 2: Check that episode boundaries are correctly mapped
+    # The episode_data_index should have 3 entries (for filtered episodes [1, 3, 4])
+    assert len(filtered_dataset.episode_data_index["from"]) == 3
+    assert len(filtered_dataset.episode_data_index["to"]) == 3
+    
+    # Test 3: THIS IS WHERE THE BUG OCCURS - accessing with delta_timestamps
+    # The bug happens in _get_query_indices when it tries to access 
+    # episode_data_index[original_episode_index] instead of episode_data_index[filtered_index]
+    all_episode_indices = []
+    for i in range(len(filtered_dataset)):
+        item = filtered_dataset[i]  # This calls _get_query_indices internally due to delta_timestamps
+        ep_idx = item["episode_index"].item()
+        all_episode_indices.append(ep_idx)
+        assert ep_idx in filtered_episodes, f"Frame {i}: got episode {ep_idx}, expected one of {filtered_episodes}"
+        
+        # Check that delta_timestamps worked correctly
+        assert "state" in item and item["state"].shape[0] == 3, f"Expected 3 timesteps from delta_timestamps, got {item['state'].shape}"
+    
+    # Test 4: Verify we see all expected episodes
+    unique_episodes = set(all_episode_indices)
+    assert unique_episodes == set(filtered_episodes), f"Expected episodes {filtered_episodes}, got {unique_episodes}"
+    
+    print(f"✅ Episode indexing fix working! Accessed {len(filtered_dataset)} frames from episodes {unique_episodes}")
+   
 
 @pytest.mark.parametrize(
     "repo_id",
