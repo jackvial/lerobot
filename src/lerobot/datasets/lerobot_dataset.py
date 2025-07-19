@@ -486,17 +486,17 @@ class LeRobotDataset(torch.utils.data.Dataset):
         self.episode_data_index = get_episode_data_index(self.meta.episodes, self.episodes)
 
         # Create bidirectional mapping between original and filtered episode indices
-        if self.episodes is not None:
-            self._original_to_filtered = {
-                original_ep_idx: i for i, original_ep_idx in enumerate(self.episodes)
-            }
-            self._filtered_to_original = {
-                i: original_ep_idx for i, original_ep_idx in enumerate(self.episodes)
-            }
-            pass
-        else:
-            self._original_to_filtered = None
-            self._filtered_to_original = None
+        # if self.episodes is not None:
+        #     self._original_to_filtered = {
+        #         original_ep_idx: i for i, original_ep_idx in enumerate(self.episodes)
+        #     }
+        #     self._filtered_to_original = {
+        #         i: original_ep_idx for i, original_ep_idx in enumerate(self.episodes)
+        #     }
+        #     pass
+        # else:
+        #     self._original_to_filtered = None
+        #     self._filtered_to_original = None
 
         # Check timestamps
         timestamps = torch.stack(self.hf_dataset["timestamp"]).numpy()
@@ -657,20 +657,22 @@ class LeRobotDataset(torch.utils.data.Dataset):
             return get_hf_features_from_features(self.features)
 
     def _get_query_indices(self, idx: int, ep_idx: int) -> tuple[dict[str, list[int | bool]]]:
+        ep_start = self.episode_data_index["from"][ep_idx]
+        ep_end = self.episode_data_index["to"][ep_idx]
         # Map to the correct position in episode_data_index
-        if self._original_to_filtered is not None:
-            if ep_idx not in self._original_to_filtered:
-                raise ValueError(
-                    f"Episode {ep_idx} not found in filtered episodes {self.episodes}. "
-                    f"This indicates a data corruption issue."
-                )
-            filtered_ep_idx = self._original_to_filtered[ep_idx]
-        else:
-            filtered_ep_idx = ep_idx
+        # if self._original_to_filtered is not None:
+        #     if ep_idx not in self._original_to_filtered:
+        #         raise ValueError(
+        #             f"Episode {ep_idx} not found in filtered episodes {self.episodes}. "
+        #             f"This indicates a data corruption issue."
+        #         )
+        #     filtered_ep_idx = self._original_to_filtered[ep_idx]
+        # else:
+        #     filtered_ep_idx = ep_idx
 
-        # Use filtered index for episode_data_index lookup
-        ep_start = self.episode_data_index["from"][filtered_ep_idx]
-        ep_end = self.episode_data_index["to"][filtered_ep_idx]
+        # # Use filtered index for episode_data_index lookup
+        # ep_start = self.episode_data_index["from"][filtered_ep_idx]
+        # ep_end = self.episode_data_index["to"][filtered_ep_idx]
         query_indices = {
             key: [max(ep_start.item(), min(ep_end.item() - 1, idx + delta)) for delta in delta_idx]
             for key, delta_idx in self.delta_indices.items()
@@ -1070,8 +1072,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
         obj.delta_timestamps = None
         obj.delta_indices = None
         obj.episode_data_index = None
-        obj._original_to_filtered = None
-        obj._filtered_to_original = None
+        # obj._original_to_filtered = None
+        # obj._filtered_to_original = None
         obj.video_backend = video_backend if video_backend is not None else get_safe_default_codec()
         return obj
 
