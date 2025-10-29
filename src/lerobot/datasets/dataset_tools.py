@@ -269,6 +269,113 @@ def merge_datasets(
     return merged_dataset
 
 
+def update_task_descriptions(
+    dataset: LeRobotDataset,
+    task_mapping: dict[str | int, str],
+    output_dir: str | Path | None = None,
+    repo_id: str | None = None,
+) -> LeRobotDataset:
+    """Update task descriptions/names in a LeRobotDataset.
+
+    This function allows you to rename tasks in the dataset. Task indices remain unchanged,
+    only the natural language descriptions are updated.
+
+    Args:
+        dataset: The source LeRobotDataset.
+        task_mapping: Dictionary mapping old task names/indices to new names.
+                     Can use either task names (str) or task indices (int) as keys.
+                     Example: {"Pick cube": "Pick up the red cube"} or {0: "Pick up the red cube"}
+        output_dir: Directory to save the new dataset. If None, uses default location.
+        repo_id: Repository ID for the new dataset. If None, appends "_modified" to original.
+
+    Returns:
+        New dataset with updated task descriptions.
+
+    Example:
+        # Update by task name
+        new_dataset = update_task_descriptions(
+            dataset,
+            task_mapping={"Pick cube": "Pick up the red cube", "Place cube": "Place the red cube"},
+            output_dir="./output",
+        )
+
+        # Update by task index
+        new_dataset = update_task_descriptions(
+            dataset,
+            task_mapping={0: "Pick up the red cube", 1: "Place the red cube"},
+            output_dir="./output",
+        )
+    """
+    if not task_mapping:
+        raise ValueError("task_mapping cannot be empty")
+
+    # Normalize task_mapping to use task names as keys
+    normalized_mapping = {}
+    for key, new_name in task_mapping.items():
+        if isinstance(key, int):
+            # Convert index to task name
+            if key >= len(dataset.meta.tasks):
+                raise ValueError(f"Task index {key} out of range. Dataset has {len(dataset.meta.tasks)} tasks.")
+            old_name = dataset.meta.tasks.iloc[key].name
+            normalized_mapping[old_name] = new_name
+        elif isinstance(key, str):
+            # Validate that task exists
+            if key not in dataset.meta.tasks.index:
+                raise ValueError(f"Task '{key}' not found in dataset")
+            normalized_mapping[key] = new_name
+        else:
+            raise ValueError(f"Invalid key type in task_mapping: {type(key)}. Must be str or int.")
+
+    # Validate that new names don't conflict with existing names (unless it's a rename of that task)
+    for old_name, new_name in normalized_mapping.items():
+        if new_name in dataset.meta.tasks.index and new_name != old_name and new_name not in normalized_mapping:
+            # new_name exists and is not being renamed itself
+            raise ValueError(
+                f"New task name '{new_name}' already exists in dataset and is not being renamed"
+            )
+
+    if repo_id is None:
+        repo_id = f"{dataset.repo_id}_modified"
+    output_dir = Path(output_dir) if output_dir is not None else HF_LEROBOT_HOME / repo_id
+
+    # Create new metadata with same features
+    new_meta = LeRobotDatasetMetadata.create(
+        repo_id=repo_id,
+        fps=dataset.meta.fps,
+        features=dataset.meta.features,
+        robot_type=dataset.meta.robot_type,
+        root=output_dir,
+        use_videos=len(dataset.meta.video_keys) > 0,
+    )
+
+    # Copy data files (task_index stays the same, no changes needed)
+    _copy_data_with_task_updates(dataset, new_meta, normalized_mapping)
+
+    # Copy videos unchanged
+    if new_meta.video_keys:
+        _copy_videos(dataset, new_meta)
+
+    # Create updated tasks DataFrame with renamed indices
+    new_tasks_df = dataset.meta.tasks.copy()
+    # Rename the index (task names) according to mapping
+    new_tasks_df = new_tasks_df.rename(index=normalized_mapping)
+    write_tasks(new_tasks_df, new_meta.root)
+    new_meta.tasks = new_tasks_df
+
+    # Copy and update episodes metadata with new task names
+    _copy_episodes_with_task_updates(dataset, new_meta, normalized_mapping)
+
+    new_dataset = LeRobotDataset(
+        repo_id=repo_id,
+        root=output_dir,
+        image_transforms=dataset.image_transforms,
+        delta_timestamps=dataset.delta_timestamps,
+        tolerance_s=dataset.tolerance_s,
+    )
+
+    return new_dataset
+
+
 def modify_features(
     dataset: LeRobotDataset,
     add_features: dict[str, tuple[np.ndarray | torch.Tensor | Callable, dict]] | None = None,
@@ -1087,3 +1194,139 @@ def _copy_episodes_metadata_and_stats(
     else:
         if src_dataset.meta.stats:
             write_stats(src_dataset.meta.stats, dst_meta.root)
+
+
+def _copy_data_with_task_updates(
+    dataset: LeRobotDataset,
+    new_meta: LeRobotDatasetMetadata,
+    task_mapping: dict[str, str],
+) -> None:
+    """Copy data files without changes (task_index values don't change for renaming)."""
+    if dataset.meta.episodes is None:
+        dataset.meta.episodes = load_episodes(dataset.meta.root)
+
+    # Map file paths to episode indices to extract chunk/file indices
+    file_to_episodes: dict[Path, set[int]] = {}
+    for ep_idx in range(dataset.meta.total_episodes):
+        file_path = dataset.meta.get_data_file_path(ep_idx)
+        if file_path not in file_to_episodes:
+            file_to_episodes[file_path] = set()
+        file_to_episodes[file_path].add(ep_idx)
+
+    for src_path in tqdm(sorted(file_to_episodes.keys()), desc="Copying data files"):
+        df = pd.read_parquet(dataset.root / src_path).reset_index(drop=True)
+
+        # Get chunk_idx and file_idx from the source file's first episode
+        episodes_in_file = file_to_episodes[src_path]
+        first_ep_idx = min(episodes_in_file)
+        src_ep = dataset.meta.episodes[first_ep_idx]
+        chunk_idx = src_ep["data/chunk_index"]
+        file_idx = src_ep["data/file_index"]
+
+        # Write using the preserved chunk_idx and file_idx from source
+        dst_path = new_meta.root / DEFAULT_DATA_PATH.format(chunk_index=chunk_idx, file_index=file_idx)
+        dst_path.parent.mkdir(parents=True, exist_ok=True)
+
+        _write_parquet(df, dst_path, new_meta)
+
+
+def _copy_episodes_with_task_updates(
+    src_dataset: LeRobotDataset,
+    dst_meta: LeRobotDatasetMetadata,
+    task_mapping: dict[str, str],
+) -> None:
+    """Copy episodes metadata and update task names."""
+    from lerobot.datasets.utils import flatten_dict
+
+    if src_dataset.meta.episodes is None:
+        src_dataset.meta.episodes = load_episodes(src_dataset.meta.root)
+
+    all_stats = []
+
+    for ep_idx in tqdm(range(src_dataset.meta.total_episodes), desc="Processing episodes metadata"):
+        src_episode_full = _load_episode_with_stats(src_dataset, ep_idx)
+        src_episode = src_dataset.meta.episodes[ep_idx]
+
+        # Get episode metadata from source
+        chunk_idx = src_episode["data/chunk_index"]
+        file_idx = src_episode["data/file_index"]
+        episode_meta = {
+            "data/chunk_index": chunk_idx,
+            "data/file_index": file_idx,
+            "dataset_from_index": src_episode["dataset_from_index"],
+            "dataset_to_index": src_episode["dataset_to_index"],
+        }
+
+        # Add video metadata if present
+        for video_key in src_dataset.meta.video_keys:
+            video_chunk_key = f"videos/{video_key}/chunk_index"
+            video_file_key = f"videos/{video_key}/file_index"
+            video_from_key = f"videos/{video_key}/from_timestamp"
+            video_to_key = f"videos/{video_key}/to_timestamp"
+
+            if video_chunk_key in src_episode:
+                episode_meta[video_chunk_key] = src_episode[video_chunk_key]
+                episode_meta[video_file_key] = src_episode[video_file_key]
+                episode_meta[video_from_key] = src_episode[video_from_key]
+                episode_meta[video_to_key] = src_episode[video_to_key]
+
+        # Update task names in the tasks list
+        old_tasks = src_episode["tasks"]
+        new_tasks = [task_mapping.get(task, task) for task in old_tasks]
+
+        # Extract and process episode statistics
+        episode_stats = {}
+        for key in src_episode_full:
+            if key.startswith("stats/"):
+                stat_key = key.replace("stats/", "")
+                parts = stat_key.split("/")
+                if len(parts) == 2:
+                    feature_name, stat_name = parts
+                    if feature_name not in episode_stats:
+                        episode_stats[feature_name] = {}
+
+                    value = src_episode_full[key]
+
+                    if feature_name in src_dataset.meta.features:
+                        feature_dtype = src_dataset.meta.features[feature_name]["dtype"]
+                        if feature_dtype in ["image", "video"] and stat_name != "count":
+                            if isinstance(value, np.ndarray) and value.dtype == object:
+                                flat_values = []
+                                for item in value:
+                                    while isinstance(item, np.ndarray):
+                                        item = item.flatten()[0]
+                                    flat_values.append(item)
+                                value = np.array(flat_values, dtype=np.float64).reshape(3, 1, 1)
+                            elif isinstance(value, np.ndarray) and value.shape == (3,):
+                                value = value.reshape(3, 1, 1)
+
+                    episode_stats[feature_name][stat_name] = value
+
+        all_stats.append(episode_stats)
+
+        episode_dict = {
+            "episode_index": ep_idx,
+            "tasks": new_tasks,
+            "length": src_episode["length"],
+        }
+        episode_dict.update(episode_meta)
+        episode_dict.update(flatten_dict({"stats": episode_stats}))
+        dst_meta._save_episode_metadata(episode_dict)
+
+    dst_meta._close_writer()
+
+    dst_meta.info.update(
+        {
+            "total_episodes": src_dataset.meta.total_episodes,
+            "total_frames": src_dataset.meta.total_frames,
+            "total_tasks": len(dst_meta.tasks) if dst_meta.tasks is not None else 0,
+            "splits": {"train": f"0:{src_dataset.meta.total_episodes}"},
+        }
+    )
+    write_info(dst_meta.info, dst_meta.root)
+
+    if all_stats:
+        logging.info(f"Aggregating statistics for {len(all_stats)} episodes")
+        aggregated_stats = aggregate_stats(all_stats)
+        filtered_stats = {k: v for k, v in aggregated_stats.items() if k in dst_meta.features}
+        write_stats(filtered_stats, dst_meta.root)

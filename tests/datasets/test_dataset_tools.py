@@ -28,6 +28,7 @@ from lerobot.datasets.dataset_tools import (
     modify_features,
     remove_feature,
     split_dataset,
+    update_task_descriptions,
 )
 
 
@@ -1047,3 +1048,241 @@ def test_modify_features_preserves_file_structure(sample_dataset, tmp_path):
         assert new_chunk_indices == original_chunk_indices, "Chunk indices should be preserved"
         assert new_file_indices == original_file_indices, "File indices should be preserved"
         assert "reward" in modified_dataset.meta.features
+
+
+def test_update_task_descriptions_by_name(sample_dataset, tmp_path):
+    """Test updating task descriptions using task names."""
+    output_dir = tmp_path / "updated_tasks"
+
+    with (
+        patch("lerobot.datasets.lerobot_dataset.get_safe_version") as mock_get_safe_version,
+        patch("lerobot.datasets.lerobot_dataset.snapshot_download") as mock_snapshot_download,
+    ):
+        mock_get_safe_version.return_value = "v3.0"
+        mock_snapshot_download.return_value = str(output_dir)
+
+        task_mapping = {
+            "task_0": "Pick up the red cube",
+            "task_1": "Place the red cube",
+        }
+
+        new_dataset = update_task_descriptions(
+            sample_dataset,
+            task_mapping=task_mapping,
+            output_dir=output_dir,
+        )
+
+    # Check that tasks were renamed
+    assert "Pick up the red cube" in new_dataset.meta.tasks.index
+    assert "Place the red cube" in new_dataset.meta.tasks.index
+    assert "task_0" not in new_dataset.meta.tasks.index
+    assert "task_1" not in new_dataset.meta.tasks.index
+
+    # Check that task indices remain unchanged
+    assert new_dataset.meta.tasks.loc["Pick up the red cube"]["task_index"] == 0
+    assert new_dataset.meta.tasks.loc["Place the red cube"]["task_index"] == 1
+
+    # Check that episodes and frames are preserved
+    assert new_dataset.meta.total_episodes == sample_dataset.meta.total_episodes
+    assert new_dataset.meta.total_frames == sample_dataset.meta.total_frames
+
+    # Check that task_index in data remains the same
+    for idx in range(len(new_dataset)):
+        item = new_dataset[idx]
+        task_idx = item["task_index"].item()
+        task_name = item["task"]
+        assert task_name in ["Pick up the red cube", "Place the red cube"]
+        assert task_idx in [0, 1]
+
+
+def test_update_task_descriptions_by_index(sample_dataset, tmp_path):
+    """Test updating task descriptions using task indices."""
+    output_dir = tmp_path / "updated_tasks"
+
+    with (
+        patch("lerobot.datasets.lerobot_dataset.get_safe_version") as mock_get_safe_version,
+        patch("lerobot.datasets.lerobot_dataset.snapshot_download") as mock_snapshot_download,
+    ):
+        mock_get_safe_version.return_value = "v3.0"
+        mock_snapshot_download.return_value = str(output_dir)
+
+        task_mapping = {
+            0: "Task zero updated",
+            1: "Task one updated",
+        }
+
+        new_dataset = update_task_descriptions(
+            sample_dataset,
+            task_mapping=task_mapping,
+            output_dir=output_dir,
+        )
+
+    # Check that tasks were renamed
+    assert "Task zero updated" in new_dataset.meta.tasks.index
+    assert "Task one updated" in new_dataset.meta.tasks.index
+
+    # Check that task indices remain unchanged
+    assert new_dataset.meta.tasks.loc["Task zero updated"]["task_index"] == 0
+    assert new_dataset.meta.tasks.loc["Task one updated"]["task_index"] == 1
+
+
+def test_update_task_descriptions_partial(sample_dataset, tmp_path):
+    """Test updating only some task descriptions."""
+    output_dir = tmp_path / "updated_tasks"
+
+    with (
+        patch("lerobot.datasets.lerobot_dataset.get_safe_version") as mock_get_safe_version,
+        patch("lerobot.datasets.lerobot_dataset.snapshot_download") as mock_snapshot_download,
+    ):
+        mock_get_safe_version.return_value = "v3.0"
+        mock_snapshot_download.return_value = str(output_dir)
+
+        # Only update task_0
+        task_mapping = {
+            "task_0": "Updated task zero",
+        }
+
+        new_dataset = update_task_descriptions(
+            sample_dataset,
+            task_mapping=task_mapping,
+            output_dir=output_dir,
+        )
+
+    # Check that only task_0 was renamed
+    assert "Updated task zero" in new_dataset.meta.tasks.index
+    assert "task_1" in new_dataset.meta.tasks.index  # Unchanged
+    assert "task_0" not in new_dataset.meta.tasks.index
+
+
+def test_update_task_descriptions_empty_mapping(sample_dataset, tmp_path):
+    """Test error when task_mapping is empty."""
+    with pytest.raises(ValueError, match="task_mapping cannot be empty"):
+        update_task_descriptions(
+            sample_dataset,
+            task_mapping={},
+            output_dir=tmp_path / "updated_tasks",
+        )
+
+
+def test_update_task_descriptions_nonexistent_task_name(sample_dataset, tmp_path):
+    """Test error when trying to update a non-existent task by name."""
+    with pytest.raises(ValueError, match="Task 'nonexistent_task' not found"):
+        update_task_descriptions(
+            sample_dataset,
+            task_mapping={"nonexistent_task": "New name"},
+            output_dir=tmp_path / "updated_tasks",
+        )
+
+
+def test_update_task_descriptions_invalid_task_index(sample_dataset, tmp_path):
+    """Test error when trying to update a task with invalid index."""
+    with pytest.raises(ValueError, match="Task index .* out of range"):
+        update_task_descriptions(
+            sample_dataset,
+            task_mapping={999: "New name"},
+            output_dir=tmp_path / "updated_tasks",
+        )
+
+
+def test_update_task_descriptions_conflicting_name(sample_dataset, tmp_path):
+    """Test error when new task name conflicts with existing task."""
+    with pytest.raises(ValueError, match="already exists in dataset"):
+        # Try to rename task_0 to task_1 (which already exists)
+        update_task_descriptions(
+            sample_dataset,
+            task_mapping={"task_0": "task_1"},
+            output_dir=tmp_path / "updated_tasks",
+        )
+
+
+def test_update_task_descriptions_preserves_stats(sample_dataset, tmp_path):
+    """Test that updating task descriptions preserves statistics."""
+    output_dir = tmp_path / "updated_tasks"
+
+    with (
+        patch("lerobot.datasets.lerobot_dataset.get_safe_version") as mock_get_safe_version,
+        patch("lerobot.datasets.lerobot_dataset.snapshot_download") as mock_snapshot_download,
+    ):
+        mock_get_safe_version.return_value = "v3.0"
+        mock_snapshot_download.return_value = str(output_dir)
+
+        new_dataset = update_task_descriptions(
+            sample_dataset,
+            task_mapping={"task_0": "Updated task"},
+            output_dir=output_dir,
+        )
+
+    assert new_dataset.meta.stats is not None
+    for feature in ["action", "observation.state"]:
+        assert feature in new_dataset.meta.stats
+        assert "mean" in new_dataset.meta.stats[feature]
+        assert "std" in new_dataset.meta.stats[feature]
+
+
+def test_update_task_descriptions_mixed_key_types(sample_dataset, tmp_path):
+    """Test updating tasks with mixed key types (string and int)."""
+    output_dir = tmp_path / "updated_tasks"
+
+    with (
+        patch("lerobot.datasets.lerobot_dataset.get_safe_version") as mock_get_safe_version,
+        patch("lerobot.datasets.lerobot_dataset.snapshot_download") as mock_snapshot_download,
+    ):
+        mock_get_safe_version.return_value = "v3.0"
+        mock_snapshot_download.return_value = str(output_dir)
+
+        task_mapping = {
+            "task_0": "Task by name",
+            1: "Task by index",
+        }
+
+        new_dataset = update_task_descriptions(
+            sample_dataset,
+            task_mapping=task_mapping,
+            output_dir=output_dir,
+        )
+
+    assert "Task by name" in new_dataset.meta.tasks.index
+    assert "Task by index" in new_dataset.meta.tasks.index
+
+
+def test_update_task_descriptions_preserves_episode_metadata(sample_dataset, tmp_path):
+    """Test that episode metadata is properly updated with new task names."""
+    output_dir = tmp_path / "updated_tasks"
+
+    with (
+        patch("lerobot.datasets.lerobot_dataset.get_safe_version") as mock_get_safe_version,
+        patch("lerobot.datasets.lerobot_dataset.snapshot_download") as mock_snapshot_download,
+    ):
+        mock_get_safe_version.return_value = "v3.0"
+        mock_snapshot_download.return_value = str(output_dir)
+
+        task_mapping = {"task_0": "New task zero", "task_1": "New task one"}
+
+        new_dataset = update_task_descriptions(
+            sample_dataset,
+            task_mapping=task_mapping,
+            output_dir=output_dir,
+        )
+
+    # Load episode metadata
+    from lerobot.datasets.utils import load_episodes
+
+    new_dataset.meta.episodes = load_episodes(new_dataset.meta.root)
+
+    # Check that episode tasks are updated
+    for ep_idx in range(new_dataset.meta.total_episodes):
+        ep = new_dataset.meta.episodes[ep_idx]
+        tasks = ep["tasks"]
+        # All tasks should be renamed
+        for task in tasks:
+            assert task in ["New task zero", "New task one"]
+
+
+def test_update_task_descriptions_invalid_key_type(sample_dataset, tmp_path):
+    """Test error when task_mapping has invalid key type."""
+    with pytest.raises(ValueError, match="Invalid key type"):
+        update_task_descriptions(
+            sample_dataset,
+            task_mapping={3.14: "Invalid key type"},  # float is invalid
+            output_dir=tmp_path / "updated_tasks",
+        )
