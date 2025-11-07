@@ -284,7 +284,7 @@ def update_task_descriptions(
         dataset: The source LeRobotDataset.
         task_mapping: Dictionary mapping old task names/indices to new names.
                      Can use either task names (str) or task indices (int) as keys.
-                     Example: {"Pick cube": "Pick up the red cube"} or {0: "Pick up the red cube"}
+                     Example: {0: "Pick up the red cube"}
         output_dir: Directory to save the new dataset. If None, uses default location.
         repo_id: Repository ID for the new dataset. If None, appends "_modified" to original.
 
@@ -292,48 +292,25 @@ def update_task_descriptions(
         New dataset with updated task descriptions.
 
     Example:
-        # Update by task name
-        new_dataset = update_task_descriptions(
-            dataset,
-            task_mapping={"Pick cube": "Pick up the red cube", "Place cube": "Place the red cube"},
-            output_dir="./output",
-        )
-
         # Update by task index
         new_dataset = update_task_descriptions(
             dataset,
-            task_mapping={0: "Pick up the red cube", 1: "Place the red cube"},
+            task_mapping={0: "Pick up the red cube", 3: "Place the red cube"},
             output_dir="./output",
         )
     """
     if not task_mapping:
         raise ValueError("task_mapping cannot be empty")
 
-    # Normalize task_mapping to use task names as keys
-    normalized_mapping = {}
+    # Validate task mapping
     for key, new_name in task_mapping.items():
-        if isinstance(key, int):
-            # Convert index to task name
-            if key >= len(dataset.meta.tasks):
-                raise ValueError(f"Task index {key} out of range. Dataset has {len(dataset.meta.tasks)} tasks.")
-            old_name = dataset.meta.tasks.iloc[key].name
-            normalized_mapping[old_name] = new_name
-        elif isinstance(key, str):
-            # Validate that task exists
-            if key not in dataset.meta.tasks.index:
-                raise ValueError(f"Task '{key}' not found in dataset")
-            normalized_mapping[key] = new_name
-        else:
-            raise ValueError(f"Invalid key type in task_mapping: {type(key)}. Must be str or int.")
-
-    # Validate that new names don't conflict with existing names (unless it's a rename of that task)
-    for old_name, new_name in normalized_mapping.items():
-        if new_name in dataset.meta.tasks.index and new_name != old_name and new_name not in normalized_mapping:
-            # new_name exists and is not being renamed itself
-            raise ValueError(
-                f"New task name '{new_name}' already exists in dataset and is not being renamed"
-            )
-
+        if not isinstance(key, int):
+            raise ValueError(f"Invalid key type in task_mapping: {key} must be int but is of type {type(key)}")
+        # Check bounds
+        if key >= len(dataset.meta.tasks):
+            raise ValueError(f"Task index {key} out of range. Dataset has {len(dataset.meta.tasks)} tasks.")
+        if not isinstance(new_name, str):
+            raise ValueError(f"Invalid value type in task_mapping: {type(new_name)}. Must be str.")
     if repo_id is None:
         repo_id = f"{dataset.repo_id}_modified"
     output_dir = Path(output_dir) if output_dir is not None else HF_LEROBOT_HOME / repo_id
@@ -347,23 +324,24 @@ def update_task_descriptions(
         root=output_dir,
         use_videos=len(dataset.meta.video_keys) > 0,
     )
-
-    # Copy data files (task_index stays the same, no changes needed)
-    _copy_data_with_task_updates(dataset, new_meta, normalized_mapping)
-
-    # Copy videos unchanged
-    if new_meta.video_keys:
-        _copy_videos(dataset, new_meta)
-
+    
     # Create updated tasks DataFrame with renamed indices
     new_tasks_df = dataset.meta.tasks.copy()
-    # Rename the index (task names) according to mapping
-    new_tasks_df = new_tasks_df.rename(index=normalized_mapping)
+    # # Rename the index (task names) according to mapping
+    new_tasks_df = new_tasks_df.rename(index=task_mapping)
     write_tasks(new_tasks_df, new_meta.root)
     new_meta.tasks = new_tasks_df
 
-    # Copy and update episodes metadata with new task names
-    _copy_episodes_with_task_updates(dataset, new_meta, normalized_mapping)
+    # Copy the video files without changes
+    if new_meta.video_keys:
+        _copy_videos(dataset, new_meta)
+
+
+    # Copy the data files
+    # data_metadata = _copy_and_reindex_data(dataset, new_meta, episode_mapping)
+
+    # Copy the episodes metadata
+    # _copy_and_reindex_episodes_metadata(dataset, new_meta, episode_mapping, data_metadata, video_metadata)
 
     new_dataset = LeRobotDataset(
         repo_id=repo_id,
@@ -1199,7 +1177,6 @@ def _copy_episodes_metadata_and_stats(
 def _copy_data_with_task_updates(
     dataset: LeRobotDataset,
     new_meta: LeRobotDatasetMetadata,
-    task_mapping: dict[str, str],
 ) -> None:
     """Copy data files without changes (task_index values don't change for renaming)."""
     if dataset.meta.episodes is None:
@@ -1228,20 +1205,33 @@ def _copy_data_with_task_updates(
         dst_path.parent.mkdir(parents=True, exist_ok=True)
 
         _write_parquet(df, dst_path, new_meta)
+        
+    _copy_episodes_metadata_and_stats(dataset, new_meta)
 
 
 def _copy_episodes_with_task_updates(
     src_dataset: LeRobotDataset,
     dst_meta: LeRobotDatasetMetadata,
-    task_mapping: dict[str, str],
+    task_mapping: dict[int, str],
 ) -> None:
-    """Copy episodes metadata and update task names."""
+    """Copy episodes metadata and update task names.
+    
+    This is necessary because episode metadata contains task names as strings,
+    not indices. Each episode has a "tasks" field with the actual task descriptions
+    that need to be updated to the new names.
+    """
     from lerobot.datasets.utils import flatten_dict
 
     if src_dataset.meta.episodes is None:
         src_dataset.meta.episodes = load_episodes(src_dataset.meta.root)
 
     all_stats = []
+
+    # Create reverse mapping from old task name to new task name
+    task_name_mapping = {}
+    for task_idx, new_name in task_mapping.items():
+        old_name = src_dataset.meta.tasks.iloc[task_idx].name
+        task_name_mapping[old_name] = new_name
 
     for ep_idx in tqdm(range(src_dataset.meta.total_episodes), desc="Processing episodes metadata"):
         src_episode_full = _load_episode_with_stats(src_dataset, ep_idx)
@@ -1270,11 +1260,11 @@ def _copy_episodes_with_task_updates(
                 episode_meta[video_from_key] = src_episode[video_from_key]
                 episode_meta[video_to_key] = src_episode[video_to_key]
 
-        # Update task names in the tasks list
+        # Update task names in the tasks list - THIS IS THE KEY PART!
         old_tasks = src_episode["tasks"]
-        new_tasks = [task_mapping.get(task, task) for task in old_tasks]
+        new_tasks = [task_name_mapping.get(task, task) for task in old_tasks]
 
-        # Extract and process episode statistics
+        # Extract and process episode statistics (unchanged)
         episode_stats = {}
         for key in src_episode_full:
             if key.startswith("stats/"):
@@ -1287,6 +1277,7 @@ def _copy_episodes_with_task_updates(
 
                     value = src_episode_full[key]
 
+                    # Handle nested numpy arrays for image/video stats
                     if feature_name in src_dataset.meta.features:
                         feature_dtype = src_dataset.meta.features[feature_name]["dtype"]
                         if feature_dtype in ["image", "video"] and stat_name != "count":
@@ -1306,7 +1297,7 @@ def _copy_episodes_with_task_updates(
 
         episode_dict = {
             "episode_index": ep_idx,
-            "tasks": new_tasks,
+            "tasks": new_tasks,  # Updated task names!
             "length": src_episode["length"],
         }
         episode_dict.update(episode_meta)
