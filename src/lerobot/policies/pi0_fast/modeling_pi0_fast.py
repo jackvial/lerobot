@@ -39,14 +39,16 @@ if TYPE_CHECKING or _transformers_available:
     from transformers.models.auto import CONFIG_MAPPING
 
     from lerobot.policies.pi_gemma import (
-        PaliGemmaForConditionalGenerationWithPiGemma,
+        PiDecoderModelProto,
         PiGemmaModel,
+        PiVLM,
     )
 else:
     CONFIG_MAPPING = None
     AutoTokenizer = None
+    PiDecoderModelProto = None
     PiGemmaModel = None
-    PaliGemmaForConditionalGenerationWithPiGemma = None
+    PiVLM = None
 
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.policies.pi0_fast.configuration_pi0_fast import PI0FastConfig
@@ -219,13 +221,15 @@ class PI0FastPaliGemma(nn.Module):
         vlm_config_hf.vision_config.projector_hidden_act = "gelu_fast"
         vlm_config_hf.vision_config.dtype = "float32"
 
-        self.paligemma = PaliGemmaForConditionalGenerationWithPiGemma(config=vlm_config_hf)
+        self.paligemma = PiVLM(config=vlm_config_hf)
 
         # Use PI Gemma (AdaRMS) as language model when use_adarms[0] is True so that
         # forward(..., adarms_cond=...) is supported (same as pi0/pi05).
         if use_adarms[0]:
             text_config = self.paligemma.config.text_config
             self.paligemma.model.language_model = PiGemmaModel(text_config)
+
+        assert isinstance(self.paligemma.model.language_model, PiDecoderModelProto)
 
         self.to_bfloat16_for_selected_params(precision)
 

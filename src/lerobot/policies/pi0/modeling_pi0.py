@@ -34,18 +34,20 @@ if TYPE_CHECKING or _transformers_available:
     from transformers.models.gemma import modeling_gemma
 
     from lerobot.policies.pi_gemma import (
-        PaliGemmaForConditionalGenerationWithPiGemma,
+        PiDecoderModelProto,
         PiGemmaForCausalLM,
+        PiVLM,
         _gated_residual,
         layernorm_forward,
     )
 else:
     CONFIG_MAPPING = None
     modeling_gemma = None
+    PiDecoderModelProto = None
     PiGemmaForCausalLM = None
     _gated_residual = None
     layernorm_forward = None
-    PaliGemmaForConditionalGenerationWithPiGemma = None
+    PiVLM = None
 
 
 from lerobot.configs.policies import PreTrainedConfig
@@ -227,9 +229,15 @@ def resize_with_pad_torch(  # see openpi `resize_with_pad_torch` (exact copy)
 
 # Define the complete layer computation function for gradient checkpointing
 def compute_layer_complete(
-    layer_idx, inputs_embeds, attention_mask, position_ids, adarms_cond, paligemma, gemma_expert
-):
-    models = [paligemma.model.language_model, gemma_expert.model]
+    layer_idx: int,
+    inputs_embeds: list[torch.Tensor],
+    attention_mask: torch.Tensor | None,
+    position_ids: torch.LongTensor | None,
+    adarms_cond: list[torch.Tensor | None],
+    paligemma: PiVLM,
+    gemma_expert: PiGemmaForCausalLM,
+) -> list[torch.Tensor]:
+    models: list[PiDecoderModelProto] = [paligemma.model.language_model, gemma_expert.model]
     query_states = []
     key_states = []
     value_states = []
@@ -390,9 +398,12 @@ class PaliGemmaWithExpertModel(
             adarms_cond_dim=action_expert_config.width if use_adarms[1] else None,
         )
 
-        self.paligemma = PaliGemmaForConditionalGenerationWithPiGemma(config=vlm_config_hf)
+        self.paligemma = PiVLM(config=vlm_config_hf)
         self.gemma_expert = PiGemmaForCausalLM(config=action_expert_config_hf)
         self.gemma_expert.model.embed_tokens = None
+
+        assert isinstance(self.paligemma.model.language_model, PiDecoderModelProto)
+        assert isinstance(self.gemma_expert.model, PiDecoderModelProto)
 
         self.to_bfloat16_for_selected_params(precision)
         self._set_requires_grad()
@@ -487,7 +498,10 @@ class PaliGemmaWithExpertModel(
             prefix_output = None
             prefix_past_key_values = None
         else:
-            models = [self.paligemma.model.language_model, self.gemma_expert.model]
+            models: list[PiDecoderModelProto] = [
+                self.paligemma.model.language_model,
+                self.gemma_expert.model,
+            ]
             num_layers = self.paligemma.config.text_config.num_hidden_layers
 
             # Check if gradient checkpointing is enabled for any of the models

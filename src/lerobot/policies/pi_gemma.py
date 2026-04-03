@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import torch
 from torch import nn
@@ -22,6 +22,7 @@ from torch import nn
 from lerobot.utils.import_utils import _transformers_available
 
 if TYPE_CHECKING or _transformers_available:
+    from transformers import AutoModel
     from transformers.cache_utils import DynamicCache
     from transformers.masking_utils import create_causal_mask
     from transformers.modeling_layers import GradientCheckpointingLayer
@@ -29,26 +30,56 @@ if TYPE_CHECKING or _transformers_available:
     from transformers.models.gemma.modeling_gemma import (
         GemmaAttention,
         GemmaConfig,
-        GemmaForCausalLM,
         GemmaMLP,
-        GemmaModel,
+        GemmaRotaryEmbedding,
     )
     from transformers.models.paligemma.modeling_paligemma import (
-        PaliGemmaForConditionalGeneration,
-        PaliGemmaModel,
+        PaliGemmaMultiModalProjector,
     )
 else:
+    AutoModel = None
     GemmaAttention = None
     GemmaConfig = None
-    GemmaForCausalLM = None
     GemmaMLP = None
-    GemmaModel = None
-    PaliGemmaModel = None
-    PaliGemmaForConditionalGeneration = None
+    GemmaRotaryEmbedding = None
+    PaliGemmaMultiModalProjector = None
     DynamicCache = None
     GradientCheckpointingLayer = None
     BaseModelOutputWithPast = None
     create_causal_mask = None
+
+
+# ---------------------------------------------------------------------------
+# Protocol types — structural contracts for Pi decoder models
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class PiDecoderModelProto(Protocol):
+    """Structural contract that all Pi decoder models (language model, expert) must satisfy."""
+
+    layers: nn.ModuleList
+    norm: nn.Module
+    embed_tokens: nn.Embedding | None
+    rotary_emb: nn.Module
+    config: Any
+
+    def forward(
+        self,
+        *,
+        inputs_embeds: torch.FloatTensor,
+        attention_mask: torch.Tensor | None = ...,
+        position_ids: torch.LongTensor | None = ...,
+        past_key_values: Any = ...,
+        use_cache: bool | None = ...,
+        adarms_cond: torch.Tensor | None = ...,
+        **kwargs: Any,
+    ) -> Any: ...
+
+
+# ---------------------------------------------------------------------------
+# Pure helper functions
+# ---------------------------------------------------------------------------
 
 
 def _gated_residual(
@@ -82,6 +113,11 @@ def layernorm_forward(
         return layernorm(x)
 
 
+# ---------------------------------------------------------------------------
+# Leaf nn.Module building blocks
+# ---------------------------------------------------------------------------
+
+
 class PiGemmaRMSNorm(nn.Module):
     """
     Adaptive RMSNorm for PI Gemma (AdaRMS).
@@ -102,9 +138,7 @@ class PiGemmaRMSNorm(nn.Module):
             self.dense = None
 
     def _norm(self, x):
-        # Compute variance in float32 (like the source implementation)
         var = torch.mean(torch.square(x.float()), dim=-1, keepdim=True)
-        # Compute normalization in float32
         normed_inputs = x * torch.rsqrt(var + self.eps)
         return normed_inputs
 
@@ -133,78 +167,83 @@ class PiGemmaRMSNorm(nn.Module):
         return f"dim={self.dim}, eps={self.eps}"
 
 
-def _get_pi_gemma_decoder_layer_base():
-    """base for PiGemmaDecoderLayer"""
+class PiDecoderLayer(GradientCheckpointingLayer):  # type: ignore[misc]
+    """Decoder layer with PiGemmaRMSNorm and gated residuals."""
 
-    class _PiGemmaDecoderLayerBase(GradientCheckpointingLayer):
-        """Decoder layer that uses PiGemmaRMSNorm and _gated_residual, compatible with v5 Gemma."""
+    def __init__(self, config: GemmaConfig, layer_idx: int):
+        super().__init__()
+        self.hidden_size = config.hidden_size
+        self.self_attn = GemmaAttention(config=config, layer_idx=layer_idx)
+        self.mlp = GemmaMLP(config)
+        cond_dim = (
+            getattr(config, "adarms_cond_dim", None) if getattr(config, "use_adarms", False) else None
+        )
+        self.input_layernorm = PiGemmaRMSNorm(
+            config.hidden_size, eps=config.rms_norm_eps, cond_dim=cond_dim
+        )
+        self.post_attention_layernorm = PiGemmaRMSNorm(
+            config.hidden_size, eps=config.rms_norm_eps, cond_dim=cond_dim
+        )
 
-        def __init__(self, config: GemmaConfig, layer_idx: int):
-            super().__init__()
-            self.hidden_size = config.hidden_size
-            self.self_attn = GemmaAttention(config=config, layer_idx=layer_idx)
-            self.mlp = GemmaMLP(config)
-            cond_dim = (
-                getattr(config, "adarms_cond_dim", None) if getattr(config, "use_adarms", False) else None
-            )
-            self.input_layernorm = PiGemmaRMSNorm(
-                config.hidden_size, eps=config.rms_norm_eps, cond_dim=cond_dim
-            )
-            self.post_attention_layernorm = PiGemmaRMSNorm(
-                config.hidden_size, eps=config.rms_norm_eps, cond_dim=cond_dim
-            )
-
-        def forward(
-            self,
-            hidden_states: torch.Tensor,
-            attention_mask: torch.Tensor | None = None,
-            position_ids: torch.LongTensor | None = None,
-            past_key_values=None,
-            use_cache: bool = False,
-            cache_position: torch.LongTensor | None = None,
-            position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
-            adarms_cond: torch.Tensor | None = None,
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_values=None,
+        use_cache: bool = False,
+        cache_position: torch.LongTensor | None = None,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
+        adarms_cond: torch.Tensor | None = None,
+        **kwargs,
+    ) -> torch.Tensor:
+        residual = hidden_states
+        hidden_states, gate = self.input_layernorm(hidden_states, cond=adarms_cond)
+        hidden_states, _ = self.self_attn(
+            hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
             **kwargs,
-        ) -> torch.Tensor:
-            residual = hidden_states
-            hidden_states, gate = self.input_layernorm(hidden_states, cond=adarms_cond)
-            hidden_states, _ = self.self_attn(
-                hidden_states,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_values=past_key_values,
-                use_cache=use_cache,
-                cache_position=cache_position,
-                position_embeddings=position_embeddings,
-                **kwargs,
-            )
+        )
 
-            hidden_states = _gated_residual(residual, hidden_states, gate)
+        hidden_states = _gated_residual(residual, hidden_states, gate)
 
-            residual = hidden_states
-            hidden_states, gate = self.post_attention_layernorm(hidden_states, cond=adarms_cond)
-            hidden_states = self.mlp(hidden_states)
-            hidden_states = _gated_residual(residual, hidden_states, gate)
-            return hidden_states
-
-    return _PiGemmaDecoderLayerBase
+        residual = hidden_states
+        hidden_states, gate = self.post_attention_layernorm(hidden_states, cond=adarms_cond)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = _gated_residual(residual, hidden_states, gate)
+        return hidden_states
 
 
-class PiGemmaModel(GemmaModel):  # type: ignore[misc]
+# ---------------------------------------------------------------------------
+# Flat model classes — no HF base-class inheritance, no wasted allocations
+# ---------------------------------------------------------------------------
+
+
+class PiGemmaModel(nn.Module):
     """
-    GemmaModel extended with AdaRMS (adaptive RMSNorm) and gated residuals when config.use_adarms is True.
+    Flat replacement for GemmaModel with AdaRMS + gated residuals.
+    Constructs only the modules it needs — no super().__init__() to GemmaModel.
     """
 
     def __init__(self, config: GemmaConfig, **kwargs):
-        super().__init__(config, **kwargs)
-        # if not getattr(config, "use_adarms", False):
-        #     return
-        cond_dim = getattr(config, "adarms_cond_dim", None)
-        pi_gemma_decoder_layer_base = _get_pi_gemma_decoder_layer_base()
+        super().__init__()
+        self.config = config
+        self.padding_idx = config.pad_token_id
+        self.vocab_size = config.vocab_size
+
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
-            [pi_gemma_decoder_layer_base(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+            [PiDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
+        cond_dim = getattr(config, "adarms_cond_dim", None)
         self.norm = PiGemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps, cond_dim=cond_dim)
+        self.rotary_emb = GemmaRotaryEmbedding(config=config)
+        self.gradient_checkpointing = False
 
     def forward(
         self,
@@ -220,10 +259,6 @@ class PiGemmaModel(GemmaModel):  # type: ignore[misc]
         adarms_cond: torch.Tensor | None = None,
         **kwargs,
     ) -> BaseModelOutputWithPast:
-        """
-        adarms_cond (`torch.Tensor` of shape `(batch_size, cond_dim)`, *optional*):
-            Condition for ADARMS.
-        """
         output_attentions = (
             output_attentions if output_attentions is not None else self.config.output_attentions
         )
@@ -267,20 +302,12 @@ class PiGemmaModel(GemmaModel):  # type: ignore[misc]
             position_ids=position_ids,
         )
 
-        # embed positions
         hidden_states = inputs_embeds
-        # Convert to bfloat16 if the first layer uses bfloat16
         if len(self.layers) > 0 and self.layers[0].self_attn.q_proj.weight.dtype == torch.bfloat16:
             hidden_states = hidden_states.to(torch.bfloat16)
 
-        # create position embeddings to be shared across the decoder layers
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        # normalized
-        # Gemma downcasts the below to float16, causing sqrt(3072)=55.4256 to become 55.5
-        # See https://github.com/huggingface/transformers/pull/29402
-
-        # decoder layers
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
 
@@ -308,7 +335,6 @@ class PiGemmaModel(GemmaModel):  # type: ignore[misc]
 
         hidden_states, _ = self.norm(hidden_states, adarms_cond)
 
-        # add hidden states from the last decoder layer
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
@@ -320,33 +346,51 @@ class PiGemmaModel(GemmaModel):  # type: ignore[misc]
         )
 
 
-class PiGemmaForCausalLM(GemmaForCausalLM):  # type: ignore[misc]
+class PiGemmaForCausalLM(nn.Module):
     """
-    Causal LM wrapper using PiGemmaModel as the backbone, for consistency with GemmaForCausalLM
-    and the language model used in pi0_fast. Use this for the action expert in pi0/pi05.
+    Flat causal LM wrapper — holds a PiGemmaModel and config.
+    Replaces GemmaForCausalLM inheritance (which allocated a full GemmaModel + lm_head then discarded them).
     """
 
     def __init__(self, config: GemmaConfig, **kwargs):
-        super().__init__(config, **kwargs)
+        super().__init__()
+        self.config = config
         self.model = PiGemmaModel(config)
 
 
-class PaliGemmaModelWithPiGemma(PaliGemmaModel):
-    """PaliGemmaModel whose language_model is PiGemmaModel (custom decoder with PiGemmaRMSNorm and gated residuals)."""
+class PiVLMInner(nn.Module):
+    """
+    Flat replacement for PaliGemmaModel — constructs vision tower, projector,
+    and language model directly without PaliGemmaModel inheritance.
+    """
 
     def __init__(self, config):
-        super().__init__(config)
+        super().__init__()
+        self.config = config
+        self.vision_tower = AutoModel.from_config(config=config.vision_config)
+        self.multi_modal_projector = PaliGemmaMultiModalProjector(config)
         self.language_model = PiGemmaModel(config.text_config)
 
+    def get_image_features(self, pixel_values: torch.FloatTensor):
+        image_outputs = self.vision_tower(pixel_values)
+        selected_image_feature = image_outputs.last_hidden_state
+        image_features = self.multi_modal_projector(selected_image_feature)
+        image_features = image_features / (self.config.text_config.hidden_size**0.5)
+        return image_features
 
-class PaliGemmaForConditionalGenerationWithPiGemma(PaliGemmaForConditionalGeneration):
-    """PaliGemmaForConditionalGeneration using PiGemma decoder for the language model."""
+
+class PiVLM(nn.Module):
+    """
+    Flat replacement for PaliGemmaForConditionalGeneration — wraps PiVLMInner.
+    Preserves the .model / .config / .language_model attribute paths that
+    consumers and state-dict key fixups rely on.
+    """
 
     def __init__(self, config):
-        super().__init__(config)
-        self.model = PaliGemmaModelWithPiGemma(config)
+        super().__init__()
+        self.config = config
+        self.model = PiVLMInner(config)
 
-    # Make modules available through conditional class for BC
     @property
     def language_model(self):
         return self.model.language_model
@@ -356,8 +400,10 @@ __all__ = [
     "PiGemmaModel",
     "PiGemmaForCausalLM",
     "PiGemmaRMSNorm",
+    "PiDecoderLayer",
+    "PiDecoderModelProto",
+    "PiVLMInner",
+    "PiVLM",
     "_gated_residual",
     "layernorm_forward",
-    "PaliGemmaModelWithPiGemma",
-    "PaliGemmaForConditionalGenerationWithPiGemma",
 ]
