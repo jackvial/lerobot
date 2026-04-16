@@ -42,9 +42,21 @@ def find_available_ports():
     return ports
 
 
+def get_stable_id_map() -> dict[str, str]:
+    """Build a map from resolved device path -> /dev/serial/by-id/ symlink path."""
+    by_id = Path("/dev/serial/by-id")
+    if not by_id.exists():
+        return {}
+    result = {}
+    for link in by_id.iterdir():
+        result[str(link.resolve())] = str(link)
+    return result
+
+
 def find_port():
     print("Finding all available ports for the MotorsBus.")
     ports_before = find_available_ports()
+    stable_ids_before = get_stable_id_map()
     print("Ports before disconnecting:", ports_before)
 
     print("Remove the USB cable from your MotorsBus and press Enter when done.")
@@ -57,6 +69,9 @@ def find_port():
     if len(ports_diff) == 1:
         port = ports_diff[0]
         print(f"The port of this MotorsBus is '{port}'")
+        stable_id = stable_ids_before.get(str(Path(port).resolve()))
+        if stable_id:
+            print(f"Persistent device path (recommended): '{stable_id}'")
         print("Reconnect the USB cable.")
     elif len(ports_diff) == 0:
         raise OSError(f"Could not detect the port. No difference was found ({ports_diff}).")
