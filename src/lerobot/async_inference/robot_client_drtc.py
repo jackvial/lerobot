@@ -478,6 +478,9 @@ class RobotClientDrtc:
             rlt_wandb_entity=config.rlt_wandb_entity,
             rlt_wandb_run_name=config.rlt_wandb_run_name,
             rlt_wandb_mode=config.rlt_wandb_mode,
+            experiment_config_path=config.experiment_config_path,
+            experiment_config_sha256=config.experiment_config_sha256,
+            experiment_config_yaml=config.experiment_config_yaml,
         )
 
         self.channel = grpc.insecure_channel(

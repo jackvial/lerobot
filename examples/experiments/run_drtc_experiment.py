@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import logging
 import signal
 import threading
@@ -166,6 +167,7 @@ class ExperimentConfig:
     rlt_action_std: float = 0.05
     rlt_num_critics: int = 1
     rlt_bc_beta: float = 1.0
+    rlt_bc_action_weights: list[float] | None = None
     rlt_jerk_beta: float = 0.0
     rlt_reference_dropout_p: float = 0.5
     rlt_intervention_reference_mode: str = "executed"
@@ -209,6 +211,9 @@ class ExperimentConfig:
     rlt_wandb_entity: str | None = None
     rlt_wandb_run_name: str | None = None
     rlt_wandb_mode: str | None = None
+    experiment_config_path: str | None = None
+    experiment_config_sha256: str | None = None
+    experiment_config_yaml: str | None = None
     # DRTC parameters
     latency_k: float = 2.0
     epsilon: int = 2
@@ -292,7 +297,7 @@ _SCALAR_FIELDS = frozenset({
     "rlt_actor_hidden_dims", "rlt_critic_hidden_dims",
     "rlt_actor_residual_scale", "rlt_eval_actor_blend",
     "rlt_actor_mode", "rlt_action_std", "rlt_num_critics",
-    "rlt_bc_beta", "rlt_jerk_beta", "rlt_reference_dropout_p",
+    "rlt_bc_beta", "rlt_bc_action_weights", "rlt_jerk_beta", "rlt_reference_dropout_p",
     "rlt_intervention_reference_mode",
     "rlt_online_collection_enabled", "rlt_online_training_enabled",
     "rlt_warmup_episodes", "rlt_warmup_transitions", "rlt_replay_capacity",
@@ -565,6 +570,7 @@ def create_client_config(
         rlt_action_std=config.rlt_action_std,
         rlt_num_critics=config.rlt_num_critics,
         rlt_bc_beta=config.rlt_bc_beta,
+        rlt_bc_action_weights=config.rlt_bc_action_weights,
         rlt_jerk_beta=config.rlt_jerk_beta,
         rlt_reference_dropout_p=config.rlt_reference_dropout_p,
         rlt_intervention_reference_mode=config.rlt_intervention_reference_mode,
@@ -606,6 +612,9 @@ def create_client_config(
         rlt_wandb_entity=config.rlt_wandb_entity,
         rlt_wandb_run_name=config.rlt_wandb_run_name,
         rlt_wandb_mode=config.rlt_wandb_mode,
+        experiment_config_path=config.experiment_config_path,
+        experiment_config_sha256=config.experiment_config_sha256,
+        experiment_config_yaml=config.experiment_config_yaml,
         actions_per_chunk=config.actions_per_chunk,
         fps=config.fps,
         s_min=config.s_min,
@@ -836,6 +845,9 @@ def main():
     config_path = resolve_config_path(args.config)
     configs = load_experiments_from_yaml(config_path)
     logger.info(f"Loaded {len(configs)} experiment(s) from {config_path}")
+    config_yaml = config_path.read_text(encoding="utf-8")
+    config_sha256 = hashlib.sha256(config_yaml.encode("utf-8")).hexdigest()
+    resolved_config_path = str(config_path.resolve())
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -846,6 +858,10 @@ def main():
             logger.info(f"{'='*50}")
             logger.info(f"[{i+1}/{len(configs)}] {config.name}")
             logger.info(f"{'='*50}")
+
+        config.experiment_config_path = resolved_config_path
+        config.experiment_config_sha256 = config_sha256
+        config.experiment_config_yaml = config_yaml
 
         if args.inference_advantage is not None:
             logger.info(

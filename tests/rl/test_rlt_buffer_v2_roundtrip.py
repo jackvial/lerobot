@@ -1,4 +1,4 @@
-"""Tests for the v2 RLT replay buffer (review-only image / episode metadata)."""
+"""Tests for the versioned RLT replay buffer."""
 
 import json
 
@@ -23,6 +23,7 @@ def _v2_sample(
     images_jpeg: dict[str, bytes] | None = None,
     inference_ts: float | None = None,
     chunk_start_step: int | None = None,
+    rlt_checkpoint_step: int | None = None,
 ) -> RLTReplaySample:
     return RLTReplaySample(
         rl_token=torch.ones(4) + offset,
@@ -41,6 +42,7 @@ def _v2_sample(
         success=success,
         failure=failure,
         chunk_start_step=chunk_start_step,
+        rlt_checkpoint_step=rlt_checkpoint_step,
     )
 
 
@@ -63,6 +65,7 @@ def test_v2_save_load_round_trip_preserves_review_fields(tmp_path):
             inference_ts=1234.5,
             images_jpeg={"observation.images.front": b"\xff\xd8\xff\xd9"},  # SOI/EOI markers
             chunk_start_step=10,
+            rlt_checkpoint_step=250,
         )
     )
     replay.add(
@@ -77,6 +80,7 @@ def test_v2_save_load_round_trip_preserves_review_fields(tmp_path):
                 "observation.images.wrist": b"\xff\xd8\xff\xda",
             },
             chunk_start_step=20,
+            rlt_checkpoint_step=260,
         )
     )
 
@@ -94,6 +98,7 @@ def test_v2_save_load_round_trip_preserves_review_fields(tmp_path):
     assert s0.failure is False
     assert s0.inference_ts == 1234.5
     assert s0.chunk_start_step == 10
+    assert s0.rlt_checkpoint_step == 250
     assert s0.images_jpeg == {"observation.images.front": b"\xff\xd8\xff\xd9"}
 
     assert s1.episode_id == 7
@@ -102,17 +107,18 @@ def test_v2_save_load_round_trip_preserves_review_fields(tmp_path):
     assert s1.failure is False
     assert s1.inference_ts == 1235.0
     assert s1.chunk_start_step == 20
+    assert s1.rlt_checkpoint_step == 260
     assert set(s1.images_jpeg.keys()) == {
         "observation.images.front",
         "observation.images.wrist",
     }
 
 
-def test_v2_state_dict_announces_version_2():
+def test_state_dict_announces_current_version():
     replay = RLTReplayBuffer(capacity=2)
     replay.add(_v2_sample(episode_id=0))
     state = replay.state_dict()
-    assert state["version"] == RLT_REPLAY_BUFFER_VERSION == 2
+    assert state["version"] == RLT_REPLAY_BUFFER_VERSION == 3
 
 
 def test_loading_v1_buffer_defaults_review_fields_to_none(tmp_path):
@@ -129,6 +135,7 @@ def test_loading_v1_buffer_defaults_review_fields_to_none(tmp_path):
         "success",
         "failure",
         "chunk_start_step",
+        "rlt_checkpoint_step",
     }
     for sample in state_dict["samples"]:
         for key in v1_keys_to_drop:
@@ -148,6 +155,7 @@ def test_loading_v1_buffer_defaults_review_fields_to_none(tmp_path):
     assert s.success is None
     assert s.failure is None
     assert s.chunk_start_step is None
+    assert s.rlt_checkpoint_step is None
     # And v1 fields are still intact.
     assert s.rl_token.shape == (4,)
     assert bool(s.done) is False
@@ -291,3 +299,4 @@ def test_sample_batch_unaffected_by_review_fields(tmp_path):
     assert "images_jpeg" not in batch
     assert "inference_ts" not in batch
     assert "episode_id" not in batch
+    assert "rlt_checkpoint_step" not in batch

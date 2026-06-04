@@ -524,6 +524,9 @@ class RemotePolicyConfig:
     rlt_wandb_entity: str | None = None
     rlt_wandb_run_name: str | None = None
     rlt_wandb_mode: str | None = None
+    experiment_config_path: str | None = None
+    experiment_config_sha256: str | None = None
+    experiment_config_yaml: str | None = None
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         """Back-compat for pickles created before RTC/spike fields existed."""
@@ -597,6 +600,9 @@ class RemotePolicyConfig:
         self.__dict__.setdefault("rlt_wandb_entity", None)
         self.__dict__.setdefault("rlt_wandb_run_name", None)
         self.__dict__.setdefault("rlt_wandb_mode", None)
+        self.__dict__.setdefault("experiment_config_path", None)
+        self.__dict__.setdefault("experiment_config_sha256", None)
+        self.__dict__.setdefault("experiment_config_yaml", None)
 
 
 def _compare_observation_states(obs1_state: Any, obs2_state: Any, atol: float) -> bool:

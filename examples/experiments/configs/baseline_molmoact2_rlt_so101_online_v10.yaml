@@ -9,8 +9,8 @@
 #     --rlt_autoencoder_dim=512
 #
 # Then run online collection/training with:
-#   ./scripts/run_drtc_experiment.sh --config baseline_molmoact2_rlt_so101_online
-name: baseline_molmoact2_rlt_so101_online
+#   ./scripts/run_drtc_experiment.sh --config baseline_molmoact2_rlt_so101_online_v10
+name: baseline_molmoact2_rlt_so101_online_v10
 
 # Hardware
 robot_type: so101_follower

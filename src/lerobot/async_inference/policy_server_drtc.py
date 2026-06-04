@@ -19,6 +19,7 @@ python -m lerobot.async_inference.policy_server_drtc \
 ```
 """
 
+import hashlib
 import logging
 import os
 import pickle  # nosec
@@ -76,6 +77,12 @@ from .utils.trajectory_viz import TrajectoryVizServer
 from .utils.viz_utils import compute_prefix_weights_for_viz
 
 _INITIAL_K = -(2**63)
+
+
+def _safe_wandb_artifact_name(name: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in name)
+    safe = safe.strip("._-")
+    return safe[:128] or "rlt-training-config"
 
 
 def _infer_model_action_horizon(policy_config: Any) -> tuple[str, int] | None:
@@ -211,6 +218,7 @@ class RLTSourceContext:
     # capture is disabled or the encoder dropped/timed out for this context.
     images_jpeg: dict[str, bytes] | None = None
     inference_ts: float | None = None
+    rlt_checkpoint_step: int | None = None
 
 
 class RLTSourceContextCache:
@@ -696,6 +704,12 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
                 "pretrained_name_or_path": str(policy_specs.pretrained_name_or_path),
                 "actions_per_chunk": int(policy_specs.actions_per_chunk),
             }
+            experiment_config_path = getattr(policy_specs, "experiment_config_path", None)
+            experiment_config_sha256 = getattr(policy_specs, "experiment_config_sha256", None)
+            if experiment_config_path:
+                wandb_config["experiment_config_path"] = str(experiment_config_path)
+            if experiment_config_sha256:
+                wandb_config["experiment_config_sha256"] = str(experiment_config_sha256)
             for key, value in vars(policy_specs).items():
                 if key.startswith("rlt_"):
                     wandb_config[key] = value
@@ -714,6 +728,7 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
                 run_url = get_url()
             self.logger.info("RLT WandB logging enabled%s", f": {run_url}" if run_url else ".")
             self._emit_rlt_status("rlt_wandb_started", rlt_wandb_url=run_url)
+            self._log_rlt_config_artifact(policy_specs, wandb)
         except Exception as e:
             run = self._rlt_wandb_run
             self._rlt_wandb_run = None
@@ -722,6 +737,56 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
                     run.finish(exit_code=1)
             self.logger.warning("RLT WandB initialization failed; continuing without WandB: %s", e)
             self._emit_rlt_status("rlt_wandb_error", rlt_wandb_error=str(e))
+
+    def _log_rlt_config_artifact(self, policy_specs: RemotePolicyConfig, wandb_module: Any) -> None:
+        run = self._rlt_wandb_run
+        if run is None:
+            return
+
+        try:
+            config_text = getattr(policy_specs, "experiment_config_yaml", None)
+            source_path_raw = getattr(policy_specs, "experiment_config_path", None)
+            source_path = Path(source_path_raw).expanduser() if source_path_raw else None
+            if not config_text and source_path is not None and source_path.is_file():
+                config_text = source_path.read_text(encoding="utf-8")
+            if not config_text:
+                return
+
+            digest = getattr(policy_specs, "experiment_config_sha256", None)
+            if not digest:
+                digest = hashlib.sha256(config_text.encode("utf-8")).hexdigest()
+            digest = str(digest)
+
+            source_name = source_path.name if source_path is not None else "drtc_experiment_config.yaml"
+            snapshot_dir = Path(self._rlt_output_dir) / "wandb_training_configs"
+            snapshot_dir.mkdir(parents=True, exist_ok=True)
+            source_suffix = Path(source_name).suffix or ".yaml"
+            snapshot_path = snapshot_dir / f"{Path(source_name).stem}_{digest[:12]}{source_suffix}"
+            snapshot_path.write_text(config_text, encoding="utf-8")
+
+            artifact_run_name = self._rlt_wandb_run_name or "rlt"
+            artifact_name = _safe_wandb_artifact_name(
+                f"{artifact_run_name}-training-config-{digest[:12]}"
+            )
+            metadata = {"sha256": digest}
+            if source_path_raw:
+                metadata["source_path"] = str(source_path_raw)
+            artifact = wandb_module.Artifact(artifact_name, type="training_config", metadata=metadata)
+            artifact.add_file(str(snapshot_path), name=source_name)
+            run.log_artifact(artifact, aliases=["latest", digest[:12]])
+            self.logger.info(
+                "RLT WandB training config artifact logged: %s (%s)",
+                artifact_name,
+                digest[:12],
+            )
+            self._emit_rlt_status(
+                "rlt_wandb_config_artifact_logged",
+                rlt_wandb_config_artifact=artifact_name,
+                experiment_config_sha256=digest,
+            )
+        except Exception as e:
+            self.logger.warning("RLT WandB config artifact logging failed; continuing: %s", e)
+            self._emit_rlt_status("rlt_wandb_config_artifact_error", rlt_wandb_error=str(e))
 
     def _finish_rlt_wandb(self, *, reason: str) -> None:
         run = self._rlt_wandb_run
@@ -1250,11 +1315,13 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
         str,
         int,
         int,
+        int,
     ]:
         if self.policy is None:
             raise RuntimeError("policy is not loaded")
         with self._rlt_model_lock:
             self.policy.eval()
+            rlt_checkpoint_step = int(getattr(self, "_rlt_train_step", 0) or 0)
             reference = self.policy.predict_vla_reference_chunk(observation, **rtc_kwargs)
             rl_token = self.policy.extract_rl_token(observation)
             proprio = observation[OBS_STATE].to(dtype=rl_token.dtype, device=rl_token.device)
@@ -1350,6 +1417,7 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             policy_mode,
             window_start,
             rlt_window,
+            rlt_checkpoint_step,
         )
 
     @staticmethod
@@ -1406,6 +1474,7 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
         window_start_index: int = 0,
         review_submission_id: int | None = None,
         review_inference_ts: float | None = None,
+        rlt_checkpoint_step: int | None = None,
     ) -> int:
         context_id = self._next_rlt_context_id_value()
         rlt_window = min(
@@ -1441,6 +1510,7 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             else (anchor_state.detach().cpu() if isinstance(anchor_state, torch.Tensor) else None),
             images_jpeg=images_jpeg,
             inference_ts=review_inference_ts,
+            rlt_checkpoint_step=None if rlt_checkpoint_step is None else int(rlt_checkpoint_step),
         )
         self._rlt_context_cache.put(context)
         self._metrics.diagnostic.counter("rlt_context_cached", 1)
@@ -1546,6 +1616,7 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             success=bool(transition.success),
             failure=bool(transition.failure),
             chunk_start_step=int(transition.chunk_start_step),
+            rlt_checkpoint_step=source.rlt_checkpoint_step,
         )
         with self._rlt_replay_lock:
             self._rlt_replay.add(sample)
@@ -1570,6 +1641,7 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             transition_frames=int(transition.num_actions),
             episode_id=episode_id,
             client_episode_id=int(transition.episode_id),
+            rlt_checkpoint_step=source.rlt_checkpoint_step,
         )
         self._maybe_persist_rlt_replay()
         self._maybe_persist_rlt_review_archive()
@@ -1672,22 +1744,33 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
     def _rlt_trainer_loop(self) -> None:
         while self.running:
             self._poll_rlt_training_controls()
-            time.sleep(self._rlt_train_freq_s)
-            self._poll_rlt_training_controls()
             if self.policy is None or self._rlt_actor_optimizer is None or self._rlt_critic_optimizer is None:
                 self._set_rlt_training_head("disabled")
+                time.sleep(self._rlt_train_freq_s)
                 continue
             if not getattr(self, "_rlt_training_operator_enabled", True):
                 self._set_rlt_training_head("paused")
+                time.sleep(self._rlt_train_freq_s)
                 continue
             with self._rlt_replay_lock:
                 replay_size = len(self._rlt_replay)
             if replay_size < max(self._rlt_batch_size, self._rlt_warmup_transitions):
                 self._set_rlt_training_head("warmup_replay")
+                time.sleep(self._rlt_train_freq_s)
                 continue
             if len(self._rlt_completed_episodes) < self._rlt_warmup_episodes:
                 self._set_rlt_training_head("warmup_episodes")
+                time.sleep(self._rlt_train_freq_s)
                 continue
+
+            if self._rlt_train_step >= self._rlt_execute_after_train_steps:
+                time.sleep(self._rlt_train_freq_s)
+                self._poll_rlt_training_controls()
+                if not self.running:
+                    break
+                if not getattr(self, "_rlt_training_operator_enabled", True):
+                    self._set_rlt_training_head("paused")
+                    continue
 
             for _ in range(self._rlt_utd_ratio):
                 try:
@@ -2913,6 +2996,7 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
         rlt_policy_mode = ""
         rlt_window_start_index = 0
         rlt_window_len = 0
+        rlt_checkpoint_step: int | None = None
         rlt_collectable = False
 
         with torch.no_grad():
@@ -3024,6 +3108,7 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
                     rlt_policy_mode,
                     rlt_window_start_index,
                     rlt_window_len,
+                    rlt_checkpoint_step,
                 ) = self._predict_pi05_rlt_with_context(
                     observation,
                     rtc_kwargs,
@@ -3071,6 +3156,7 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
                 window_start_index=rlt_window_start_index,
                 review_submission_id=review_submission_id,
                 review_inference_ts=review_inference_ts,
+                rlt_checkpoint_step=rlt_checkpoint_step,
             )
             rlt_collectable = True
         if rlt_policy_mode:

@@ -24,19 +24,20 @@ class RLTReplaySample:
     reward: float
     done: bool
     is_intervention: bool
-    # v2 review-only fields. None on v1 buffers and when capture is disabled,
-    # so the training hot path never has to branch on them.
+    # Review/rollout metadata. None on older buffers or when a field was not
+    # captured, so the training hot path never has to branch on these fields.
     images_jpeg: dict[str, bytes] | None = None
     inference_ts: float | None = None
     episode_id: int | None = None
     success: bool | None = None
     failure: bool | None = None
     chunk_start_step: int | None = None
+    rlt_checkpoint_step: int | None = None
 
 
 # Bumped whenever new fields are persisted. Loaders must remain backward
 # compatible with all prior versions by defaulting missing keys to None.
-RLT_REPLAY_BUFFER_VERSION = 2
+RLT_REPLAY_BUFFER_VERSION = 3
 RLT_REVIEW_SIDECAR_VERSION = 1
 _RLT_REVIEW_LABELS = {"success", "failure", "open"}
 _LOGGER = logging.getLogger(__name__)
@@ -159,6 +160,9 @@ class RLTReplayBuffer:
                 chunk_start_step=None
                 if sample.chunk_start_step is None
                 else int(sample.chunk_start_step),
+                rlt_checkpoint_step=None
+                if sample.rlt_checkpoint_step is None
+                else int(sample.rlt_checkpoint_step),
             )
         )
 
@@ -263,6 +267,9 @@ class RLTReplayBuffer:
                 "chunk_start_step": None
                 if sample.chunk_start_step is None
                 else int(sample.chunk_start_step),
+                "rlt_checkpoint_step": None
+                if sample.rlt_checkpoint_step is None
+                else int(sample.rlt_checkpoint_step),
             }
             return state
 
@@ -294,6 +301,7 @@ class RLTReplayBuffer:
                     success=sample.get("success"),
                     failure=sample.get("failure"),
                     chunk_start_step=sample.get("chunk_start_step"),
+                    rlt_checkpoint_step=sample.get("rlt_checkpoint_step"),
                 )
             )
 

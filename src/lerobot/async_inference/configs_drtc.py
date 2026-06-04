@@ -485,6 +485,18 @@ class RobotClientDrtcConfig:
         default=None,
         metadata={"help": "Optional Weights & Biases mode: online, offline, or disabled."},
     )
+    experiment_config_path: str | None = field(
+        default=None,
+        metadata={"help": "Resolved experiment YAML path for run provenance."},
+    )
+    experiment_config_sha256: str | None = field(
+        default=None,
+        metadata={"help": "SHA-256 digest of the experiment YAML used for this run."},
+    )
+    experiment_config_yaml: str | None = field(
+        default=None,
+        metadata={"help": "Exact experiment YAML contents to persist with the training run."},
+    )
 
     # Diagnostic metrics (console output; avg/max only)
     metrics_diagnostic_enabled: bool = field(

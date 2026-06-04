@@ -323,11 +323,13 @@ def test_cache_rlt_source_context_uses_shifted_window(monkeypatch):
         proprio=torch.ones(1, 2),
         anchor_state=None,
         window_start_index=2,
+        rlt_checkpoint_step=123,
     )
 
     cached = server._rlt_context_cache.get(context_id)
     assert cached is not None
     assert cached.chunk_start_step == 102
+    assert cached.rlt_checkpoint_step == 123
     assert torch.equal(cached.reference_chunk, reference[:, 2:5].squeeze(0))
 
 
@@ -349,6 +351,7 @@ def test_accept_rlt_transition_uses_executed_chunk_as_intervention_reference(mon
         proprio=torch.ones(2),
         reference_chunk=source_reference,
         anchor_state=None,
+        rlt_checkpoint_step=250,
     )
     next_context = policy_server_drtc.RLTSourceContext(
         context_id=2,
@@ -382,6 +385,7 @@ def test_accept_rlt_transition_uses_executed_chunk_as_intervention_reference(mon
     assert torch.equal(sample.reference_chunk, executed)
     assert torch.equal(sample.executed_chunk, executed)
     assert torch.equal(sample.next_reference_chunk, next_context.reference_chunk)
+    assert sample.rlt_checkpoint_step == 250
     assert server._rlt_accepted_frames == 3
 
 

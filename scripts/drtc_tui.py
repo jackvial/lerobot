@@ -68,6 +68,7 @@ class RolloutRow:
     server_episode_id: int | None = None
     critical_start_s: float | None = None
     critical_end_s: float | None = None
+    rlt_checkpoint_step: int | None = None
     label: str = "open"
     discard: bool = False
 
@@ -163,10 +164,13 @@ class TuiState:
         if source == "policy_server":
             server_episode_id = _to_int(event.get("episode_id"))
             client_episode_id = _to_int(event.get("client_episode_id"))
+            rlt_checkpoint_step = _to_int(event.get("rlt_checkpoint_step"))
             if server_episode_id is not None and client_episode_id is not None:
                 for row in self.rollouts.values():
                     if row.critical_phase_id == client_episode_id:
                         row.server_episode_id = server_episode_id
+                        if rlt_checkpoint_step is not None:
+                            row.rlt_checkpoint_step = rlt_checkpoint_step
             return
 
         rollout_id = _to_int(event.get("rollout_id"))
@@ -175,10 +179,17 @@ class TuiState:
 
         if event_name == "rlt_rollout_started":
             rollout_start_ts = _to_float(event.get("rollout_start_ts")) or timestamp
-            self._get_or_create_rollout_row(rollout_id, rollout_start_ts).rollout_start_ts = rollout_start_ts
+            row = self._get_or_create_rollout_row(rollout_id, rollout_start_ts)
+            row.rollout_start_ts = rollout_start_ts
+            rlt_checkpoint_step = _to_int(event.get("rlt_checkpoint_step"))
+            if rlt_checkpoint_step is not None:
+                row.rlt_checkpoint_step = rlt_checkpoint_step
             return
 
         row = self._get_or_create_rollout_row(rollout_id, timestamp)
+        rlt_checkpoint_step = _to_int(event.get("rlt_checkpoint_step"))
+        if rlt_checkpoint_step is not None:
+            row.rlt_checkpoint_step = rlt_checkpoint_step
         critical_phase_id = _to_int(event.get("critical_phase_id") or event.get("episode_id"))
         if critical_phase_id is not None:
             row.critical_phase_id = critical_phase_id
@@ -407,6 +418,7 @@ def _status_event_detail(event: dict[str, Any]) -> str:
         "rlt_actor_gate_reason",
         "rlt_action_deviation_rms",
         "rlt_action_deviation_abs_max",
+        "rlt_checkpoint_step",
         "rlt_train_step",
         "episode_id",
         "buffered_transitions_dropped",
@@ -514,6 +526,12 @@ def _format_seconds(value: float | None) -> str:
     if value is None:
         return "n/a"
     return f"{value:.2f}"
+
+
+def _format_checkpoint_step(value: int | None) -> str:
+    if value is None:
+        return "n/a"
+    return str(value)
 
 
 def _display_rollout_label(label: str) -> str:
@@ -645,9 +663,9 @@ def _format_rollouts_panel(state: TuiState) -> str:
         "",
         (
             f"{'rollout':>7}  {'rollout_start':19}  {'critical_start':>14}  "
-            f"{'critical_end':>12}  {'label':>7}  {'discard':>7}"
+            f"{'critical_end':>12}  {'ckpt':>8}  {'label':>7}  {'discard':>7}"
         ),
-        "-" * 80,
+        "-" * 90,
     ]
     if not rows:
         lines.append("No rollout rows yet")
@@ -659,6 +677,7 @@ def _format_rollouts_panel(state: TuiState) -> str:
             f"{_format_datetime(row.rollout_start_ts):19}  "
             f"{_format_seconds(row.critical_start_s):>14}  "
             f"{_format_seconds(row.critical_end_s):>12}  "
+            f"{_format_checkpoint_step(row.rlt_checkpoint_step):>8}  "
             f"{_display_rollout_label(row.label):>7}  "
             f"{str(bool(row.discard)).lower():>7}"
         )
