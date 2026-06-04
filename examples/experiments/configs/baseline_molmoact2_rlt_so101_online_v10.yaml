@@ -53,7 +53,7 @@ rlt_actor_mode: residual
 rlt_action_std: 0.02
 rlt_num_critics: 2
 rlt_bc_beta: 0.05
-rlt_bc_action_weights: [1, 1, 1, 1, 1, 1, 0.2]
+rlt_bc_action_weights: [1, 1, 1, 1, 1, 0.2]
 rlt_jerk_beta: 5.0
 # Keep dropout off in residual mode: zeroing the reference chunk makes the
 # BC target unreachable within the residual cap.
@@ -74,8 +74,8 @@ rlt_intervention_sample_fraction: 0.0
 rlt_train_freq_s: 2.0
 rlt_save_freq_steps: 10
 rlt_output_dir: outputs/rlt_molmoact2_so101_online_20260602_first47_residual_paperish_v10
-rlt_demo_buffer_path:
-rlt_online_buffer_path: outputs/rlt_molmoact2_so101_online/rlt_online_replay_20260831_v3_first47_train_residual_paperish_v10.pt
+rlt_demo_buffer_path: outputs/rlt_molmoact2_so101_online/rlt_demo_replay_20260831_v3_first47_residual_paperish_v10.pt
+rlt_online_buffer_path: outputs/rlt_molmoact2_so101_online/rlt_online_replay_20260831_v3_online_residual_paperish_v10.pt
 rlt_online_buffer_save_freq_transitions: 50
 rlt_persist_buffer_on_shutdown: true
 
@@ -89,7 +89,7 @@ rlt_wandb_mode: online
 # Optional review capture for offline episode inspection.
 rlt_review_capture_enabled: true
 rlt_review_jpeg_quality: 80
-rlt_review_archive_path: outputs/rlt_molmoact2_so101_online/rlt_online_replay_20260831_v3_first47_train_residual_paperish_v10_archive.pt
+rlt_review_archive_path: outputs/rlt_molmoact2_so101_online/rlt_online_replay_20260831_v3_online_residual_paperish_v10_archive.pt
 
 rlt_actor_lr: 0.00002
 rlt_critic_lr: 0.0001
