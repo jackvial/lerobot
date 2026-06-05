@@ -24,7 +24,7 @@ ROBOT_KEY_COMMANDS = {
     "3": "toggle_critical_phase",
     "4": "end_rollout_enable_intervention",
     "5": "toggle_intervention",
-    "6": "toggle_rlt_training",
+    "6": "start_rlt_training",
     "7": "toggle_rlt_actor",
     "1": "success",
     "0": "failure",
@@ -412,6 +412,7 @@ def _status_event_detail(event: dict[str, Any]) -> str:
         "rlt_loaded_head_step",
         "rlt_actor_available",
         "command",
+        "control_source",
         "rlt_actor_operator_enabled",
         "rlt_policy_mode",
         "rlt_actor_executing",
@@ -714,6 +715,10 @@ def _critical_output_source_line(server: dict[str, Any], client: dict[str, Any])
 
 
 def _control_command_label(command: str, state: TuiState) -> str:
+    if command == "start_rlt_training":
+        return "RLT training start"
+    if command == "pause_rlt_training":
+        return "RLT training pause"
     if command == "toggle_rlt_actor":
         current_value = state.server.get("rlt_actor_operator_enabled")
         if current_value is None:
@@ -1230,7 +1235,7 @@ def _run_textual(
             Binding("3", "critical_toggle", "Record critical"),
             Binding("4", "robot_end_rollout", "End episode"),
             Binding("5", "robot_intervention", "Intervention"),
-            Binding("6", "training_toggle", "Train on/off"),
+            Binding("6", "training_toggle", "Train start/pause"),
             Binding("7", "rlt_actor_toggle", "RLT head on/off"),
             Binding("1", "robot_success", "Episode success"),
             Binding("0", "robot_failure", "Fail critical"),
@@ -1255,6 +1260,7 @@ def _run_textual(
                 self.state.status_events.append(
                     f"{_format_time(time.time())} tui: plots moved to browser trajectory dashboard"
                 )
+            self._last_training_control_ts = 0.0
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=True)
@@ -1418,7 +1424,15 @@ def _run_textual(
             self._send_robot_command("end_rollout_enable_intervention")
 
         def action_training_toggle(self) -> None:
-            self._send_robot_command("toggle_rlt_training")
+            now = time.time()
+            if now - self._last_training_control_ts < 0.75:
+                return
+            self._last_training_control_ts = now
+            training_operator_enabled = _truthy(
+                self.state.server.get("rlt_training_operator_enabled")
+            )
+            command = "pause_rlt_training" if training_operator_enabled else "start_rlt_training"
+            self._send_robot_command(command)
 
         def action_rlt_actor_toggle(self) -> None:
             self._send_robot_command("toggle_rlt_actor")

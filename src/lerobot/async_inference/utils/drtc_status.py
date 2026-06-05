@@ -74,7 +74,7 @@ class DrtcControlReader:
     def enabled(self) -> bool:
         return bool(self._path_str)
 
-    def read_commands(self) -> list[str]:
+    def read_events(self) -> list[dict[str, Any]]:
         if not self._path_str:
             return []
 
@@ -106,7 +106,7 @@ class DrtcControlReader:
             lines = data.splitlines()
             self._partial = lines.pop() if lines else data
 
-        commands: list[str] = []
+        events: list[dict[str, Any]] = []
         for line in lines:
             try:
                 payload = json.loads(line)
@@ -115,5 +115,8 @@ class DrtcControlReader:
             if isinstance(payload, dict):
                 command = payload.get("command")
                 if isinstance(command, str):
-                    commands.append(command)
-        return commands
+                    events.append(payload)
+        return events
+
+    def read_commands(self) -> list[str]:
+        return [event["command"] for event in self.read_events()]

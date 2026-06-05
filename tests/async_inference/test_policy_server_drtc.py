@@ -411,7 +411,14 @@ def test_rlt_training_control_toggle_enables_operator(monkeypatch):
     server._rlt_online_replay_size = 0
     server._rlt_accepted_transitions = 0
     server._rlt_accepted_frames = 0
-    server._tui_control_reader = SimpleNamespace(read_commands=lambda: ["toggle_rlt_training"])
+    server._rlt_warmup_episodes = 0
+    server._rlt_warmup_transitions = 0
+    server._rlt_batch_size = 1
+    server._rlt_actor_optimizer = object()
+    server._rlt_critic_optimizer = object()
+    server._rlt_head_status_fields = lambda: {}
+    server._poll_rlt_override_file = lambda: None
+    server._tui_control_reader = SimpleNamespace(read_events=lambda: [{"command": "toggle_rlt_training"}])
 
     server._poll_rlt_training_controls()
 

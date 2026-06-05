@@ -478,8 +478,15 @@ class RemotePolicyConfig:
     rlt_actor_mode: str = "gaussian"
     # Fixed exploration std for online data collection. 0 => deterministic mean.
     rlt_action_std: float = 0.05
+    rlt_shared_noise_per_chunk: bool = True
+    rlt_target_sigma: float = 0.1
+    rlt_target_noise_clip: float = 0.5
     rlt_num_critics: int = 1
+    rlt_critic_layer_norm: bool = True
+    rlt_q_target_clip: bool = True
+    rlt_abort_reward: float = -1.0
     rlt_bc_beta: float = 1.0
+    rlt_bc_reduction: str = "sum"
     rlt_bc_action_weights: list[float] | None = None
     rlt_jerk_beta: float = 0.0
     rlt_reference_dropout_p: float = 0.5
@@ -556,8 +563,15 @@ class RemotePolicyConfig:
         self.__dict__.setdefault("rlt_eval_actor_blend", 1.0)
         self.__dict__.setdefault("rlt_actor_mode", "gaussian")
         self.__dict__.setdefault("rlt_action_std", 0.05)
+        self.__dict__.setdefault("rlt_shared_noise_per_chunk", True)
+        self.__dict__.setdefault("rlt_target_sigma", 0.1)
+        self.__dict__.setdefault("rlt_target_noise_clip", 0.5)
         self.__dict__.setdefault("rlt_num_critics", 1)
+        self.__dict__.setdefault("rlt_critic_layer_norm", True)
+        self.__dict__.setdefault("rlt_q_target_clip", True)
+        self.__dict__.setdefault("rlt_abort_reward", -1.0)
         self.__dict__.setdefault("rlt_bc_beta", 1.0)
+        self.__dict__.setdefault("rlt_bc_reduction", "sum")
         self.__dict__.setdefault("rlt_bc_action_weights", None)
         self.__dict__.setdefault("rlt_jerk_beta", 0.0)
         self.__dict__.setdefault("rlt_reference_dropout_p", 0.5)

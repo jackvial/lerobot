@@ -45,6 +45,7 @@ from lerobot.rl.rlt_pi05 import (  # noqa: F401  re-exported for convenience
     RLTCriticEnsemble,
     RLTCriticHead,
     RLTokenAutoencoder,
+    TD3Agent,
     rlt_actor_loss,
     rlt_critic_loss,
     save_rlt_head_checkpoint,
@@ -113,8 +114,15 @@ class MolmoAct2RLTConfig(MolmoAct2Config):
     rlt_actor_residual_scale: float = 0.25
     rlt_actor_mode: Literal["gaussian", "residual"] = "gaussian"
     rlt_action_std: float = 0.05
+    rlt_shared_noise_per_chunk: bool = True
+    rlt_target_sigma: float = 0.1
+    rlt_target_noise_clip: float = 0.5
     rlt_num_critics: int = 1
+    rlt_critic_layer_norm: bool = True
+    rlt_q_target_clip: bool = True
+    rlt_abort_reward: float = -1.0
     rlt_bc_beta: float = 1.0
+    rlt_bc_reduction: Literal["sum", "mean"] = "sum"
     rlt_bc_action_weights: list[float] | None = None
     rlt_jerk_beta: float = 0.0
     rlt_reference_dropout_p: float = 0.5
@@ -236,6 +244,7 @@ class MolmoAct2RLTPolicy(MolmoAct2Policy):
             residual_scale=config.rlt_actor_residual_scale,
             actor_mode=config.rlt_actor_mode,
             action_std=config.rlt_action_std,
+            shared_noise_per_chunk=config.rlt_shared_noise_per_chunk,
         )
         critic_kwargs = {
             "token_dim": token_dim,
@@ -243,12 +252,14 @@ class MolmoAct2RLTPolicy(MolmoAct2Policy):
             "action_dim": action_dim,
             "chunk_size": config.rlt_chunk_size,
             "hidden_dim": config.rlt_critic_hidden_dims or config.rlt_critic_hidden_dim,
+            "layer_norm": config.rlt_critic_layer_norm,
         }
         if config.rlt_num_critics > 1:
             self.rlt_critic = RLTCriticEnsemble(num_critics=config.rlt_num_critics, **critic_kwargs)
         else:
             self.rlt_critic = RLTCriticHead(**critic_kwargs)
         self.rlt_critic_target = copy.deepcopy(self.rlt_critic)
+        self.td3_agent = TD3Agent(self.rlt_actor, self.rlt_critic, self.rlt_critic_target, self.config)
 
         self.config.rlt_token_dim = token_dim
         self.config.rlt_autoencoder_dim = autoencoder_dim

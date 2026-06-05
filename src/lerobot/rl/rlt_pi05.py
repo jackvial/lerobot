@@ -42,11 +42,20 @@ def _hidden_dims(value: int | list[int] | tuple[int, ...] | None, *, default: in
     return dims
 
 
-def _make_mlp(in_dim: int, hidden_dims: list[int], out_dim: int) -> nn.Sequential:
+def _make_mlp(
+    in_dim: int,
+    hidden_dims: list[int],
+    out_dim: int,
+    *,
+    layer_norm: bool = False,
+) -> nn.Sequential:
     layers: list[nn.Module] = []
     prev_dim = in_dim
     for hidden_dim in hidden_dims:
-        layers.extend([nn.Linear(prev_dim, hidden_dim), nn.SiLU()])
+        layers.append(nn.Linear(prev_dim, hidden_dim))
+        if layer_norm:
+            layers.append(nn.LayerNorm(hidden_dim))
+        layers.append(nn.SiLU())
         prev_dim = hidden_dim
     layers.append(nn.Linear(prev_dim, out_dim))
     return nn.Sequential(*layers)
@@ -159,7 +168,7 @@ class RLTokenAutoencoder(nn.Module):
         return (loss * mask).sum() / mask.sum().clamp_min(1.0)
 
 
-class RLTActorHead(nn.Module):
+class RLTActor(nn.Module):
     """Chunk policy conditioned on the RL token, proprio, and the VLA reference chunk.
 
     Two parameterizations are supported:
@@ -185,6 +194,7 @@ class RLTActorHead(nn.Module):
         residual_scale: float = 0.25,
         actor_mode: Literal["gaussian", "residual"] = "gaussian",
         action_std: float = 0.0,
+        shared_noise_per_chunk: bool = True,
     ):
         super().__init__()
         if actor_mode not in ("gaussian", "residual"):
@@ -196,10 +206,16 @@ class RLTActorHead(nn.Module):
         self.actor_mode = actor_mode
         self.residual_scale = float(residual_scale)
         self.action_std = float(action_std)
+        self.shared_noise_per_chunk = bool(shared_noise_per_chunk)
         in_dim = token_dim + proprio_dim + chunk_size * action_dim
         out_dim = chunk_size * action_dim
         self.hidden_dims = _hidden_dims(hidden_dim)
         self.net = _make_mlp(in_dim, self.hidden_dims, out_dim)
+        with torch.no_grad():
+            final = self.net[-1]
+            if isinstance(final, nn.Linear):
+                final.weight.zero_()
+                final.bias.zero_()
 
     def forward(self, rl_token: Tensor, proprio: Tensor, reference_chunk: Tensor) -> Tensor:
         flat_ref = reference_chunk.reshape(reference_chunk.shape[0], -1)
@@ -217,19 +233,41 @@ class RLTActorHead(nn.Module):
         reference_chunk: Tensor,
         *,
         std: float | None = None,
+        clip: float | None = None,
+        shared_noise: bool | None = None,
     ) -> Tensor:
         """Sample an action chunk with fixed Gaussian exploration noise.
 
-        For ``actor_mode="residual"`` the residual policy is deterministic, so this
-        is equivalent to :meth:`forward` and the ``std`` argument is ignored.
+        Exploration can share one noise vector across the whole chunk to avoid
+        frame-to-frame jitter. TD3 target smoothing passes ``shared_noise=False``.
         """
         mean = self.forward(rl_token, proprio, reference_chunk)
-        if self.actor_mode == "residual":
-            return mean
         sigma = self.action_std if std is None else float(std)
         if sigma <= 0:
             return mean
-        return mean + sigma * torch.randn_like(mean)
+        use_shared_noise = self.shared_noise_per_chunk if shared_noise is None else bool(shared_noise)
+        if use_shared_noise:
+            noise = torch.randn(
+                mean.shape[0],
+                1,
+                mean.shape[-1],
+                device=mean.device,
+                dtype=mean.dtype,
+            ).expand_as(mean)
+        else:
+            noise = torch.randn_like(mean)
+        noise = noise * sigma
+        if clip is not None:
+            clip_value = float(clip)
+            if clip_value >= 0:
+                noise = noise.clamp(-clip_value, clip_value)
+        return mean + noise
+
+    def mean(self, rl_token: Tensor, proprio: Tensor, reference_chunk: Tensor) -> Tensor:
+        return self.forward(rl_token, proprio, reference_chunk)
+
+
+RLTActorHead = RLTActor
 
 
 class RLTCriticHead(nn.Module):
@@ -243,11 +281,12 @@ class RLTCriticHead(nn.Module):
         action_dim: int,
         chunk_size: int,
         hidden_dim: int | list[int] | tuple[int, ...] = 256,
+        layer_norm: bool = False,
     ):
         super().__init__()
         in_dim = token_dim + proprio_dim + chunk_size * action_dim
         self.hidden_dims = _hidden_dims(hidden_dim)
-        self.net = _make_mlp(in_dim, self.hidden_dims, 1)
+        self.net = _make_mlp(in_dim, self.hidden_dims, 1, layer_norm=layer_norm)
 
     def forward(self, rl_token: Tensor, proprio: Tensor, action_chunk: Tensor) -> Tensor:
         flat_action = action_chunk.reshape(action_chunk.shape[0], -1)
@@ -266,6 +305,7 @@ class RLTCriticEnsemble(nn.Module):
         action_dim: int,
         chunk_size: int,
         hidden_dim: int | list[int] | tuple[int, ...] = 256,
+        layer_norm: bool = False,
     ):
         super().__init__()
         if num_critics <= 0:
@@ -278,6 +318,7 @@ class RLTCriticEnsemble(nn.Module):
                     action_dim=action_dim,
                     chunk_size=chunk_size,
                     hidden_dim=hidden_dim,
+                    layer_norm=layer_norm,
                 )
                 for _ in range(num_critics)
             ]
@@ -299,6 +340,31 @@ def _critic_values(critic: nn.Module, rl_token: Tensor, proprio: Tensor, action_
     return critic(rl_token, proprio, action_chunk).unsqueeze(0)
 
 
+RLTCritic = RLTCriticEnsemble
+
+
+class TD3Agent:
+    """Compatibility container using TheWisp-style TD3 naming.
+
+    Policies still expose ``rlt_actor``, ``rlt_critic``, and
+    ``rlt_critic_target`` directly so existing checkpoints keep the same keys.
+    """
+
+    def __init__(self, actor: RLTActor, critic: nn.Module, critic_target: nn.Module, config: Any):
+        self.actor = actor
+        self.critic = critic
+        self.critic_target = critic_target
+        self.config = config
+
+    def soft_update_target(self, tau: float | None = None) -> None:
+        tau_value = float(getattr(self.config, "rlt_target_update_tau", 0.005) if tau is None else tau)
+        with torch.no_grad():
+            for target_param, source_param in zip(
+                self.critic_target.parameters(), self.critic.parameters(), strict=True
+            ):
+                target_param.mul_(1.0 - tau_value).add_(source_param, alpha=tau_value)
+
+
 def rlt_critic_loss(
     policy: "PI05RLTPolicy",
     batch: dict[str, Tensor],
@@ -310,10 +376,15 @@ def rlt_critic_loss(
     rewards = batch["reward"].to(dtype=batch["rl_token"].dtype)
     dones = batch["done"].to(dtype=batch["rl_token"].dtype)
     with torch.no_grad():
-        next_actions = policy.rlt_actor(
+        target_sigma = float(getattr(policy.config, "rlt_target_sigma", 0.1) or 0.0)
+        target_noise_clip = getattr(policy.config, "rlt_target_noise_clip", 0.5)
+        next_actions = policy.rlt_actor.sample(
             batch["next_rl_token"],
             batch["next_proprio"],
             batch["next_reference_chunk"],
+            std=target_sigma,
+            clip=target_noise_clip,
+            shared_noise=False,
         )
         next_q_values = _critic_values(
             policy.rlt_critic_target,
@@ -329,6 +400,11 @@ def rlt_critic_loss(
         chunk_size = int(getattr(policy.config, "rlt_chunk_size", 1))
         bootstrap = float(discount) ** max(chunk_size, 1)
         target_q = rewards + bootstrap * (1.0 - dones) * next_q
+        if bool(getattr(policy.config, "rlt_q_target_clip", True)):
+            denom = max(1.0 - bootstrap, 1e-6)
+            high = 1.0 / denom
+            low = -abs(float(getattr(policy.config, "rlt_abort_reward", -1.0) or -1.0)) / denom
+            target_q = target_q.clamp(low, high)
     pred_q_values = _critic_values(policy.rlt_critic, batch["rl_token"], batch["proprio"], batch["executed_chunk"])
     loss = F.mse_loss(pred_q_values, target_q.unsqueeze(0).expand_as(pred_q_values))
     if not return_stats:
@@ -376,7 +452,13 @@ def rlt_actor_loss(
                 f"rlt_bc_action_weights has {weights.numel()} entries, expected {bc_error.shape[-1]}"
             )
         bc_error = bc_error * weights.view(1, 1, -1)
-    bc_loss = bc_error.mean()
+    bc_reduction = str(getattr(policy.config, "rlt_bc_reduction", "sum")).lower()
+    if bc_reduction == "mean":
+        bc_loss = bc_error.mean()
+    elif bc_reduction == "sum":
+        bc_loss = bc_error.sum(dim=(-1, -2)).mean()
+    else:
+        raise ValueError(f"rlt_bc_reduction must be 'sum' or 'mean', got {bc_reduction!r}")
 
     jerk_loss = torch.zeros((), dtype=actor_actions.dtype, device=actor_actions.device)
     if actor_actions.shape[1] >= 3:
@@ -385,17 +467,27 @@ def rlt_actor_loss(
     jerk_beta = float(getattr(policy.config, "rlt_jerk_beta", 0.0) or 0.0)
 
     q_loss = -q_value.mean()
-    loss = q_loss + bc_beta * bc_loss + jerk_beta * jerk_loss
+    bc_term = bc_beta * bc_loss
+    jerk_term = jerk_beta * jerk_loss
+    loss = q_loss + bc_term + jerk_term
     if not return_stats:
         return loss
 
     action_deviation = actor_actions - batch["reference_chunk"].to(dtype=actor_actions.dtype)
+    bc_to_q_ratio = bc_term.detach() / q_loss.detach().abs().clamp_min(1e-8)
     return loss, {
         "actor_loss": loss.detach(),
         "actor_q_mean": q_value.detach().mean(),
         "actor_q_abs_max": q_values.detach().abs().max(),
+        "actor_q_term": q_loss.detach(),
         "actor_bc_loss": bc_loss.detach(),
+        "actor_bc_penalty": bc_loss.detach(),
+        "actor_bc_term": bc_term.detach(),
         "actor_jerk_loss": jerk_loss.detach(),
+        "actor_jerk_term": jerk_term.detach(),
+        "actor_bc_to_q_ratio": bc_to_q_ratio,
+        "bc_beta": torch.as_tensor(float(bc_beta), dtype=actor_actions.dtype, device=actor_actions.device),
+        "bc_reduction_sum": torch.as_tensor(1.0 if bc_reduction == "sum" else 0.0, dtype=actor_actions.dtype, device=actor_actions.device),
         "action_deviation_rms": action_deviation.detach().pow(2).mean().sqrt(),
         "action_deviation_abs_max": action_deviation.detach().abs().max(),
     }
@@ -403,6 +495,11 @@ def rlt_actor_loss(
 
 def soft_update_rlt_target(policy: "PI05RLTPolicy", tau: float) -> None:
     """Soft-update `rlt_critic_target` toward `rlt_critic`."""
+    td3_agent = getattr(policy, "td3_agent", None)
+    if isinstance(td3_agent, TD3Agent):
+        td3_agent.soft_update_target(tau)
+        return
+
     tau = float(tau)
     with torch.no_grad():
         for target_param, source_param in zip(
@@ -457,8 +554,15 @@ class PI05RLTConfig(PI05FullConfig):
     # Fixed exploration std used when sampling actions during online data
     # collection. Set 0 to disable noise (pure mean).
     rlt_action_std: float = 0.05
+    rlt_shared_noise_per_chunk: bool = True
+    rlt_target_sigma: float = 0.1
+    rlt_target_noise_clip: float = 0.5
     rlt_num_critics: int = 1
+    rlt_critic_layer_norm: bool = True
+    rlt_q_target_clip: bool = True
+    rlt_abort_reward: float = -1.0
     rlt_bc_beta: float = 1.0
+    rlt_bc_reduction: Literal["sum", "mean"] = "sum"
     rlt_bc_action_weights: list[float] | None = None
     rlt_jerk_beta: float = 0.0
     rlt_reference_dropout_p: float = 0.5
@@ -623,6 +727,7 @@ class PI05RLTPolicy(PI05FullPolicy):
             residual_scale=config.rlt_actor_residual_scale,
             actor_mode=config.rlt_actor_mode,
             action_std=config.rlt_action_std,
+            shared_noise_per_chunk=config.rlt_shared_noise_per_chunk,
         )
         critic_kwargs = {
             "token_dim": config.rlt_token_dim,
@@ -630,12 +735,14 @@ class PI05RLTPolicy(PI05FullPolicy):
             "action_dim": action_dim,
             "chunk_size": config.rlt_chunk_size,
             "hidden_dim": config.rlt_critic_hidden_dims or config.rlt_critic_hidden_dim,
+            "layer_norm": config.rlt_critic_layer_norm,
         }
         if config.rlt_num_critics > 1:
             self.rlt_critic = RLTCriticEnsemble(num_critics=config.rlt_num_critics, **critic_kwargs)
         else:
             self.rlt_critic = RLTCriticHead(**critic_kwargs)
         self.rlt_critic_target = copy.deepcopy(self.rlt_critic)
+        self.td3_agent = TD3Agent(self.rlt_actor, self.rlt_critic, self.rlt_critic_target, self.config)
 
         self._freeze_vla()
         self._rlt_actor_loaded = False

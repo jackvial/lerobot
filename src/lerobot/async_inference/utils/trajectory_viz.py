@@ -49,7 +49,20 @@ from .drtc_status import emit_control
 logger = logging.getLogger(__name__)
 
 _CONTROL_ENV = "LEROBOT_DRTC_CONTROL_FILE"
-_BROWSER_CONTROL_COMMANDS = {"success", "failure", "discard_episode"}
+_BROWSER_CONTROL_COMMANDS = {"success", "failure", "discard_episode", "set_rlt_hparams"}
+_RLT_HPARAM_CONTROL_FIELDS = {
+    "beta",
+    "rlt_bc_beta",
+    "rlt_jerk_beta",
+    "jerk_beta",
+    "rlt_action_std",
+    "exploration_sigma",
+    "actor_sigma",
+    "rlt_target_sigma",
+    "target_sigma",
+    "rlt_target_noise_clip",
+    "target_noise_clip",
+}
 
 
 def _json_safe(value: Any) -> Any:
@@ -167,6 +180,18 @@ class TrajectoryVizServer:
                 "message": f"Unsupported command: {command or '<empty>'}",
             }
 
+        override_fields = {
+            key: data.get(key)
+            for key in _RLT_HPARAM_CONTROL_FIELDS
+            if key in data
+        }
+        if command == "set_rlt_hparams" and not override_fields:
+            return {
+                **base_ack,
+                "status": "error",
+                "message": "No supported RLT hyperparameter fields were provided.",
+            }
+
         if not os.environ.get(_CONTROL_ENV):
             return {
                 **base_ack,
@@ -180,11 +205,13 @@ class TrajectoryVizServer:
             row_key=data.get("row_key"),
             rollout_id=data.get("rollout_id"),
             critical_phase_id=data.get("critical_phase_id"),
+            **override_fields,
         )
         return {
             **base_ack,
             "status": "sent",
             "message": "Command sent to DRTC control side channel.",
+            "overrides": override_fields,
         }
 
     async def _handler(self, websocket):

@@ -20,9 +20,11 @@ python -m lerobot.async_inference.policy_server_drtc \
 """
 
 import hashlib
+import json
 import logging
 import os
 import pickle  # nosec
+import queue
 import signal
 import threading
 import time
@@ -370,6 +372,11 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
         self._rlt_wandb_run_name: str | None = None
         self._rlt_wandb_mode: str | None = None
         self._rlt_wandb_run: Any | None = None
+        self._rlt_wandb_log_queue: queue.Queue[tuple[int, dict[str, int | float]] | None] | None = None
+        self._rlt_wandb_log_thread: threading.Thread | None = None
+        self._rlt_wandb_log_stop = threading.Event()
+        self._rlt_wandb_dropped_logs = 0
+        self._rlt_override_mtime = 0.0
         self._rlt_safety_violation_count = 0
         self._rlt_actor_disabled_by_safety = False
         self._rlt_next_context_id = 1
@@ -527,6 +534,8 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
     def _emit_rlt_status(self, event: str, **fields: Any) -> None:
         with self._rlt_replay_lock:
             replay_size = len(self._rlt_replay)
+        policy = getattr(self, "policy", None)
+        cfg = getattr(policy, "config", None)
         completed_episodes = len(self._rlt_completed_episodes)
         required_replay_transitions = max(int(self._rlt_batch_size), int(self._rlt_warmup_transitions))
         required_warmup_episodes = int(self._rlt_warmup_episodes)
@@ -561,6 +570,12 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             "rlt_actor_operator_enabled": getattr(self, "_rlt_actor_operator_enabled", True),
             "rlt_actor_critical_phase_active": getattr(self, "_rlt_actor_critical_phase_active", False),
             "rlt_eval_actor_blend": getattr(self, "_rlt_eval_actor_blend", 1.0),
+            "rlt_bc_beta": getattr(cfg, "rlt_bc_beta", None) if cfg is not None else None,
+            "rlt_bc_reduction": getattr(cfg, "rlt_bc_reduction", None) if cfg is not None else None,
+            "rlt_jerk_beta": getattr(cfg, "rlt_jerk_beta", None) if cfg is not None else None,
+            "rlt_action_std": getattr(cfg, "rlt_action_std", None) if cfg is not None else None,
+            "rlt_target_sigma": getattr(cfg, "rlt_target_sigma", None) if cfg is not None else None,
+            "rlt_target_noise_clip": getattr(cfg, "rlt_target_noise_clip", None) if cfg is not None else None,
             "rlt_training_head": self._rlt_training_head,
             "rlt_actor_training": self._rlt_training_head == "actor",
             "rlt_critic_training": self._rlt_training_head == "critic",
@@ -586,6 +601,9 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             "rlt_wandb_mode": getattr(self, "_rlt_wandb_mode", None),
         }
         status_fields.update(self._rlt_head_status_fields())
+        if "source" in fields:
+            fields = dict(fields)
+            fields["control_source"] = fields.pop("source")
         status_fields.update(fields)
         emit_status(
             "policy_server",
@@ -658,11 +676,164 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             rlt_actor_critical_phase_active=getattr(self, "_rlt_actor_critical_phase_active", False),
         )
 
+    @staticmethod
+    def _rlt_override_value(event: dict[str, Any], *keys: str) -> float | None:
+        for key in keys:
+            if key not in event:
+                continue
+            value = event.get(key)
+            if value is None or value == "":
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _write_rlt_overrides_file(self) -> None:
+        policy = getattr(self, "policy", None)
+        cfg = getattr(policy, "config", None)
+        if cfg is None:
+            return
+        path = Path(self._rlt_output_dir) / "rlt_overrides.json"
+        payload = {
+            "beta": getattr(cfg, "rlt_bc_beta", None),
+            "rlt_bc_beta": getattr(cfg, "rlt_bc_beta", None),
+            "jerk_beta": getattr(cfg, "rlt_jerk_beta", None),
+            "rlt_jerk_beta": getattr(cfg, "rlt_jerk_beta", None),
+            "exploration_sigma": getattr(cfg, "rlt_action_std", None),
+            "rlt_action_std": getattr(cfg, "rlt_action_std", None),
+            "target_sigma": getattr(cfg, "rlt_target_sigma", None),
+            "rlt_target_sigma": getattr(cfg, "rlt_target_sigma", None),
+            "target_noise_clip": getattr(cfg, "rlt_target_noise_clip", None),
+            "rlt_target_noise_clip": getattr(cfg, "rlt_target_noise_clip", None),
+            "updated_at": time.time(),
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = path.with_suffix(path.suffix + ".tmp")
+            tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            tmp_path.replace(path)
+            self._rlt_override_mtime = path.stat().st_mtime
+        except Exception as e:
+            self.logger.warning("Failed to write RLT overrides to %s: %s", path, e)
+
+    def _apply_rlt_hparam_overrides(
+        self,
+        event: dict[str, Any],
+        *,
+        command: str,
+        source: str,
+        persist: bool,
+    ) -> None:
+        if not self._is_rlt_policy() or self.policy is None:
+            self._emit_rlt_status(
+                "rlt_hparam_override_ignored",
+                command=command,
+                reason="not_rlt_policy",
+            )
+            return
+
+        cfg = self.policy.config
+        candidates = {
+            "rlt_bc_beta": self._rlt_override_value(event, "rlt_bc_beta", "beta"),
+            "rlt_jerk_beta": self._rlt_override_value(event, "rlt_jerk_beta", "jerk_beta"),
+            "rlt_action_std": self._rlt_override_value(
+                event,
+                "rlt_action_std",
+                "exploration_sigma",
+                "actor_sigma",
+            ),
+            "rlt_target_sigma": self._rlt_override_value(event, "rlt_target_sigma", "target_sigma"),
+            "rlt_target_noise_clip": self._rlt_override_value(
+                event,
+                "rlt_target_noise_clip",
+                "target_noise_clip",
+            ),
+        }
+        updates: dict[str, float] = {}
+        with self._rlt_model_lock:
+            for attr, value in candidates.items():
+                if value is None:
+                    continue
+                if value < 0:
+                    self._emit_rlt_status(
+                        "rlt_hparam_override_rejected",
+                        command=command,
+                        source=source,
+                        rlt_hparam=attr,
+                        reason="negative_value",
+                        attempted_value=value,
+                    )
+                    continue
+                old = float(getattr(cfg, attr, 0.0) or 0.0)
+                if old == float(value):
+                    updates[attr] = old
+                    continue
+                setattr(cfg, attr, float(value))
+                if attr == "rlt_action_std":
+                    actor = getattr(self.policy, "rlt_actor", None)
+                    if actor is not None and hasattr(actor, "action_std"):
+                        actor.action_std = float(value)
+                updates[attr] = float(value)
+                self.logger.info(
+                    "RLT hparam override from %s: %s %.6g -> %.6g",
+                    source,
+                    attr,
+                    old,
+                    float(value),
+                )
+
+        if not updates:
+            return
+        if persist:
+            self._write_rlt_overrides_file()
+        self._emit_rlt_status(
+            "rlt_hparam_override",
+            command=command,
+            source=source,
+            rlt_hparam_updates=updates,
+            rlt_bc_beta=getattr(cfg, "rlt_bc_beta", None),
+            rlt_jerk_beta=getattr(cfg, "rlt_jerk_beta", None),
+            rlt_action_std=getattr(cfg, "rlt_action_std", None),
+            rlt_target_sigma=getattr(cfg, "rlt_target_sigma", None),
+            rlt_target_noise_clip=getattr(cfg, "rlt_target_noise_clip", None),
+        )
+
+    def _poll_rlt_override_file(self) -> None:
+        path = Path(self._rlt_output_dir) / "rlt_overrides.json"
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return
+        if mtime <= self._rlt_override_mtime:
+            return
+        self._rlt_override_mtime = mtime
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as e:
+            self._emit_rlt_status(
+                "rlt_hparam_override_rejected",
+                command="rlt_overrides_json",
+                source="rlt_overrides_json",
+                reason=f"read_error:{e}",
+            )
+            return
+        if isinstance(payload, dict):
+            self._apply_rlt_hparam_overrides(
+                payload,
+                command="rlt_overrides_json",
+                source="rlt_overrides_json",
+                persist=False,
+            )
+
     def _poll_rlt_training_controls(self) -> None:
+        self._poll_rlt_override_file()
         reader = getattr(self, "_tui_control_reader", None)
         if reader is None:
             return
-        for command in reader.read_commands():
+        for event in reader.read_events():
+            command = str(event.get("command") or "")
             if command == "start_rlt_training":
                 self._set_rlt_training_operator_enabled(True, command=command)
             elif command == "pause_rlt_training":
@@ -680,6 +851,13 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
                 self._set_rlt_actor_operator_enabled(
                     not getattr(self, "_rlt_actor_operator_enabled", False),
                     command=command,
+                )
+            elif command == "set_rlt_hparams":
+                self._apply_rlt_hparam_overrides(
+                    event,
+                    command=command,
+                    source=str(event.get("source") or "control_side_channel"),
+                    persist=True,
                 )
 
     def _init_rlt_wandb(self, policy_specs: RemotePolicyConfig) -> None:
@@ -729,9 +907,11 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             self.logger.info("RLT WandB logging enabled%s", f": {run_url}" if run_url else ".")
             self._emit_rlt_status("rlt_wandb_started", rlt_wandb_url=run_url)
             self._log_rlt_config_artifact(policy_specs, wandb)
+            self._start_rlt_wandb_log_worker()
         except Exception as e:
             run = self._rlt_wandb_run
             self._rlt_wandb_run = None
+            self._stop_rlt_wandb_log_worker(timeout_s=1.0)
             if run is not None:
                 with suppress(Exception):
                     run.finish(exit_code=1)
@@ -788,11 +968,84 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             self.logger.warning("RLT WandB config artifact logging failed; continuing: %s", e)
             self._emit_rlt_status("rlt_wandb_config_artifact_error", rlt_wandb_error=str(e))
 
+    def _start_rlt_wandb_log_worker(self) -> None:
+        self._stop_rlt_wandb_log_worker(timeout_s=1.0)
+        if self._rlt_wandb_run is None:
+            return
+        self._rlt_wandb_log_stop = threading.Event()
+        self._rlt_wandb_log_queue = queue.Queue(maxsize=256)
+        self._rlt_wandb_dropped_logs = 0
+        self._rlt_wandb_log_thread = threading.Thread(
+            target=self._rlt_wandb_log_worker,
+            name="rlt_wandb_log_worker",
+            daemon=True,
+        )
+        self._rlt_wandb_log_thread.start()
+
+    def _stop_rlt_wandb_log_worker(self, *, timeout_s: float) -> bool:
+        stop_event = getattr(self, "_rlt_wandb_log_stop", None)
+        if stop_event is not None:
+            stop_event.set()
+        log_queue = self._rlt_wandb_log_queue
+        if log_queue is not None:
+            with suppress(queue.Full):
+                log_queue.put_nowait(None)
+        thread = self._rlt_wandb_log_thread
+        still_alive = False
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=max(float(timeout_s), 0.0))
+            still_alive = thread.is_alive()
+            if still_alive:
+                self.logger.warning(
+                    "RLT WandB log worker did not stop within %.1fs; leaving it daemonized.",
+                    float(timeout_s),
+                )
+        self._rlt_wandb_log_thread = None
+        self._rlt_wandb_log_queue = None
+        return still_alive
+
+    def _rlt_wandb_log_worker(self) -> None:
+        log_queue = self._rlt_wandb_log_queue
+        if log_queue is None:
+            return
+        while not self._rlt_wandb_log_stop.is_set() or not log_queue.empty():
+            try:
+                item = log_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            try:
+                if item is None:
+                    return
+                step, payload = item
+                run = self._rlt_wandb_run
+                if run is None:
+                    continue
+                run.log(payload, step=step)
+            except Exception as e:
+                run = self._rlt_wandb_run
+                self._rlt_wandb_run = None
+                if run is not None:
+                    with suppress(Exception):
+                        run.finish(exit_code=1)
+                self.logger.warning("RLT WandB logging failed; disabling WandB for this run: %s", e)
+                self._emit_rlt_status("rlt_wandb_error", rlt_wandb_error=str(e))
+                return
+            finally:
+                log_queue.task_done()
+
     def _finish_rlt_wandb(self, *, reason: str) -> None:
         run = self._rlt_wandb_run
         if run is None:
+            self._stop_rlt_wandb_log_worker(timeout_s=1.0)
             return
         self._rlt_wandb_run = None
+        worker_alive = self._stop_rlt_wandb_log_worker(timeout_s=2.0)
+        if worker_alive:
+            self.logger.warning(
+                "Skipping RLT WandB finish during %s because the log worker is blocked.",
+                reason,
+            )
+            return
         try:
             run.finish()
             self._emit_rlt_status("rlt_wandb_finished", reason=reason)
@@ -823,16 +1076,22 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
         if not payload:
             return
 
+        log_queue = self._rlt_wandb_log_queue
+        if log_queue is None:
+            return
         try:
-            run.log(payload, step=int(step))
-        except Exception as e:
-            run = self._rlt_wandb_run
-            self._rlt_wandb_run = None
-            if run is not None:
-                with suppress(Exception):
-                    run.finish(exit_code=1)
-            self.logger.warning("RLT WandB logging failed; disabling WandB for this run: %s", e)
-            self._emit_rlt_status("rlt_wandb_error", rlt_wandb_error=str(e))
+            log_queue.put_nowait((int(step), payload))
+        except queue.Full:
+            self._rlt_wandb_dropped_logs += 1
+            if self._rlt_wandb_dropped_logs == 1 or self._rlt_wandb_dropped_logs % 100 == 0:
+                self.logger.warning(
+                    "RLT WandB log queue full; dropped %d metric payload(s).",
+                    int(self._rlt_wandb_dropped_logs),
+                )
+                self._emit_rlt_status(
+                    "rlt_wandb_log_dropped",
+                    rlt_wandb_dropped_logs=int(self._rlt_wandb_dropped_logs),
+                )
 
     def _cuda_device_index(self) -> int | None:
         device = str(getattr(self, "device", "") or "")
@@ -1091,6 +1350,7 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
         self._rlt_wandb_entity = getattr(policy_specs, "rlt_wandb_entity", None)
         self._rlt_wandb_run_name = getattr(policy_specs, "rlt_wandb_run_name", None)
         self._rlt_wandb_mode = getattr(policy_specs, "rlt_wandb_mode", None)
+        self._rlt_override_mtime = 0.0
         self._rlt_safety_violation_count = 0
         self._rlt_actor_disabled_by_safety = False
         context_cache_size = int(getattr(policy_specs, "rlt_context_cache_size", 256))
@@ -1862,6 +2122,13 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             "rlt_critic_lr": self._rlt_critic_lr,
             "rlt_discount": self._rlt_discount,
             "rlt_target_update_tau": self._rlt_target_update_tau,
+            "rlt_bc_beta": getattr(self.policy.config, "rlt_bc_beta", None),
+            "rlt_bc_reduction": getattr(self.policy.config, "rlt_bc_reduction", None),
+            "rlt_jerk_beta": getattr(self.policy.config, "rlt_jerk_beta", None),
+            "rlt_action_std": getattr(self.policy.config, "rlt_action_std", None),
+            "rlt_target_sigma": getattr(self.policy.config, "rlt_target_sigma", None),
+            "rlt_target_noise_clip": getattr(self.policy.config, "rlt_target_noise_clip", None),
+            "rlt_q_target_clip": getattr(self.policy.config, "rlt_q_target_clip", None),
             "rlt_demo_buffer_path": self._rlt_demo_buffer_path,
             "rlt_online_buffer_path": self._rlt_online_buffer_path,
             "rlt_resume_head_checkpoint": bool(getattr(self, "_rlt_resume_head_checkpoint", False)),
@@ -2153,8 +2420,17 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
                 rlt_actor_residual_scale=float(getattr(policy_specs, "rlt_actor_residual_scale", 0.25)),
                 rlt_actor_mode=str(getattr(policy_specs, "rlt_actor_mode", "gaussian")),
                 rlt_action_std=float(getattr(policy_specs, "rlt_action_std", 0.05)),
+                rlt_shared_noise_per_chunk=bool(
+                    getattr(policy_specs, "rlt_shared_noise_per_chunk", True)
+                ),
+                rlt_target_sigma=float(getattr(policy_specs, "rlt_target_sigma", 0.1)),
+                rlt_target_noise_clip=float(getattr(policy_specs, "rlt_target_noise_clip", 0.5)),
                 rlt_num_critics=int(getattr(policy_specs, "rlt_num_critics", 1)),
+                rlt_critic_layer_norm=bool(getattr(policy_specs, "rlt_critic_layer_norm", True)),
+                rlt_q_target_clip=bool(getattr(policy_specs, "rlt_q_target_clip", True)),
+                rlt_abort_reward=float(getattr(policy_specs, "rlt_abort_reward", -1.0)),
                 rlt_bc_beta=float(getattr(policy_specs, "rlt_bc_beta", 1.0)),
+                rlt_bc_reduction=str(getattr(policy_specs, "rlt_bc_reduction", "sum")),
                 rlt_bc_action_weights=getattr(policy_specs, "rlt_bc_action_weights", None),
                 rlt_jerk_beta=float(getattr(policy_specs, "rlt_jerk_beta", 0.0)),
                 rlt_reference_dropout_p=float(getattr(policy_specs, "rlt_reference_dropout_p", 0.5)),

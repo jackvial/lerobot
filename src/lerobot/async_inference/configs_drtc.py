@@ -284,13 +284,41 @@ class RobotClientDrtcConfig:
             )
         },
     )
+    rlt_shared_noise_per_chunk: bool = field(
+        default=True,
+        metadata={"help": "Use one exploration-noise sample per chunk/action dimension to reduce jitter."},
+    )
+    rlt_target_sigma: float = field(
+        default=0.1,
+        metadata={"help": "TD3 target-policy smoothing noise std for RLT critic bootstraps."},
+    )
+    rlt_target_noise_clip: float = field(
+        default=0.5,
+        metadata={"help": "Symmetric clip for TD3 target-policy smoothing noise."},
+    )
     rlt_num_critics: int = field(
         default=1,
         metadata={"help": "Number of RLT critics. Values >1 use clipped-min critic targets."},
     )
+    rlt_critic_layer_norm: bool = field(
+        default=True,
+        metadata={"help": "Use LayerNorm after hidden critic linear layers for TD3 stability."},
+    )
+    rlt_q_target_clip: bool = field(
+        default=True,
+        metadata={"help": "Clamp RLT critic targets to the sparse-reward theoretical return bound."},
+    )
+    rlt_abort_reward: float = field(
+        default=-1.0,
+        metadata={"help": "Negative reward magnitude used to derive the lower bound for Q target clipping."},
+    )
     rlt_bc_beta: float = field(
         default=1.0,
         metadata={"help": "BC/reference-action regularization coefficient for RLT training."},
+    )
+    rlt_bc_reduction: str = field(
+        default="sum",
+        metadata={"help": "BC penalty reduction: 'sum' matches TheWisp/HVLA; 'mean' preserves legacy scaling."},
     )
     rlt_bc_action_weights: list[float] | None = field(
         default=None,
@@ -790,6 +818,12 @@ class RobotClientDrtcConfig:
             raise ValueError(
                 f"rlt_action_std must be non-negative, got {self.rlt_action_std}"
             )
+        if self.rlt_target_sigma < 0:
+            raise ValueError(f"rlt_target_sigma must be non-negative, got {self.rlt_target_sigma}")
+        if self.rlt_target_noise_clip < 0:
+            raise ValueError(
+                f"rlt_target_noise_clip must be non-negative, got {self.rlt_target_noise_clip}"
+            )
         if self.rlt_num_critics <= 0:
             raise ValueError(f"rlt_num_critics must be positive, got {self.rlt_num_critics}")
         if self.rlt_critic_updates_per_actor <= 0:
@@ -814,6 +848,10 @@ class RobotClientDrtcConfig:
             )
         if self.rlt_bc_beta < 0:
             raise ValueError(f"rlt_bc_beta must be non-negative, got {self.rlt_bc_beta}")
+        if self.rlt_bc_reduction not in ("sum", "mean"):
+            raise ValueError(
+                f"rlt_bc_reduction must be 'sum' or 'mean', got {self.rlt_bc_reduction!r}"
+            )
         if self.rlt_bc_action_weights is not None and any(weight < 0 for weight in self.rlt_bc_action_weights):
             raise ValueError(
                 f"rlt_bc_action_weights must be non-negative, got {self.rlt_bc_action_weights}"

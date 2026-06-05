@@ -165,8 +165,15 @@ class ExperimentConfig:
     rlt_eval_actor_blend: float = 1.0
     rlt_actor_mode: str = "gaussian"
     rlt_action_std: float = 0.05
+    rlt_shared_noise_per_chunk: bool = True
+    rlt_target_sigma: float = 0.1
+    rlt_target_noise_clip: float = 0.5
     rlt_num_critics: int = 1
+    rlt_critic_layer_norm: bool = True
+    rlt_q_target_clip: bool = True
+    rlt_abort_reward: float = -1.0
     rlt_bc_beta: float = 1.0
+    rlt_bc_reduction: str = "sum"
     rlt_bc_action_weights: list[float] | None = None
     rlt_jerk_beta: float = 0.0
     rlt_reference_dropout_p: float = 0.5
@@ -296,8 +303,11 @@ _SCALAR_FIELDS = frozenset({
     "rlt_resume_head_checkpoint", "rlt_chunk_size", "rlt_token_dim", "rlt_autoencoder_dim",
     "rlt_actor_hidden_dims", "rlt_critic_hidden_dims",
     "rlt_actor_residual_scale", "rlt_eval_actor_blend",
-    "rlt_actor_mode", "rlt_action_std", "rlt_num_critics",
-    "rlt_bc_beta", "rlt_bc_action_weights", "rlt_jerk_beta", "rlt_reference_dropout_p",
+    "rlt_actor_mode", "rlt_action_std", "rlt_shared_noise_per_chunk",
+    "rlt_target_sigma", "rlt_target_noise_clip", "rlt_num_critics",
+    "rlt_critic_layer_norm", "rlt_q_target_clip", "rlt_abort_reward",
+    "rlt_bc_beta", "rlt_bc_reduction", "rlt_bc_action_weights",
+    "rlt_jerk_beta", "rlt_reference_dropout_p",
     "rlt_intervention_reference_mode",
     "rlt_online_collection_enabled", "rlt_online_training_enabled",
     "rlt_warmup_episodes", "rlt_warmup_transitions", "rlt_replay_capacity",
@@ -568,8 +578,15 @@ def create_client_config(
         rlt_eval_actor_blend=config.rlt_eval_actor_blend,
         rlt_actor_mode=config.rlt_actor_mode,
         rlt_action_std=config.rlt_action_std,
+        rlt_shared_noise_per_chunk=config.rlt_shared_noise_per_chunk,
+        rlt_target_sigma=config.rlt_target_sigma,
+        rlt_target_noise_clip=config.rlt_target_noise_clip,
         rlt_num_critics=config.rlt_num_critics,
+        rlt_critic_layer_norm=config.rlt_critic_layer_norm,
+        rlt_q_target_clip=config.rlt_q_target_clip,
+        rlt_abort_reward=config.rlt_abort_reward,
         rlt_bc_beta=config.rlt_bc_beta,
+        rlt_bc_reduction=config.rlt_bc_reduction,
         rlt_bc_action_weights=config.rlt_bc_action_weights,
         rlt_jerk_beta=config.rlt_jerk_beta,
         rlt_reference_dropout_p=config.rlt_reference_dropout_p,
