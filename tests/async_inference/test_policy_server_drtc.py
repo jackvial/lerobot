@@ -478,6 +478,64 @@ def test_rlt_training_control_toggle_enables_operator(monkeypatch):
 
 
 @require_package("grpcio", "grpc")
+def test_rlt_success_reward_boost_updates_live_replay(monkeypatch):
+    from lerobot.async_inference import policy_server_drtc
+
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        policy_server_drtc,
+        "emit_status",
+        lambda source, event, **fields: emitted.append((source, event, fields)),
+    )
+
+    server = _server_for_rlt_status(policy_server_drtc)
+    server.policy = SimpleNamespace(config=SimpleNamespace(rlt_enabled=True, rlt_head_checkpoint=None))
+    server._rlt_demo_replay_samples = []
+    server._rlt_demo_replay_fraction = 0.0
+    server._rlt_online_replay = RLTReplayBuffer(capacity=4)
+    server._rlt_online_buffer_path = None
+    server._rlt_review_archive_path = None
+    server._rlt_review_archive = []
+    server._rlt_review_archive_dirty = False
+    server._rlt_buffer_dirty = False
+
+    first = _sample(0.0)
+    first.episode_id = 12
+    first.reward = 0.0
+    first.done = False
+    first.success = True
+    second = _sample(1.0)
+    second.episode_id = 12
+    second.reward = 1.0
+    second.done = True
+    second.success = True
+    server._rlt_online_replay.extend([first, second])
+    server._rebuild_rlt_training_replay_locked()
+
+    server._apply_rlt_success_reward_boost(
+        {
+            "command": "boost_success_reward",
+            "server_episode_id": 12,
+            "critical_phase_id": 3,
+            "rollout_id": 2,
+        }
+    )
+
+    online_samples = server._rlt_online_replay.samples()
+    training_samples = server._rlt_replay.samples()
+    assert [sample.reward for sample in online_samples] == [0.0, 2.0]
+    assert [sample.done for sample in online_samples] == [False, True]
+    assert [sample.success for sample in online_samples] == [True, True]
+    assert [sample.reward for sample in training_samples] == [0.0, 2.0]
+    assert server._rlt_buffer_dirty is True
+    assert emitted[-1][1] == "rlt_critical_success_reward_boosted"
+    assert emitted[-1][2]["episode_id"] == 12
+    assert emitted[-1][2]["critical_phase_id"] == 3
+    assert emitted[-1][2]["reward"] == 2.0
+    assert emitted[-1][2]["reward_boosted"] is True
+
+
+@require_package("grpcio", "grpc")
 def test_rlt_actor_execution_is_gated_to_operator_enabled_critical_phase():
     from lerobot.async_inference import policy_server_drtc
 

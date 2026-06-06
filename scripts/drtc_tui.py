@@ -71,6 +71,8 @@ class RolloutRow:
     rlt_checkpoint_step: int | None = None
     label: str = "open"
     discard: bool = False
+    reward_boosted: bool = False
+    boost_reward: float | None = None
 
 
 @dataclass
@@ -165,6 +167,28 @@ class TuiState:
             server_episode_id = _to_int(event.get("episode_id"))
             client_episode_id = _to_int(event.get("client_episode_id"))
             rlt_checkpoint_step = _to_int(event.get("rlt_checkpoint_step"))
+            rollout_id = _to_int(event.get("rollout_id"))
+            critical_phase_id = _to_int(event.get("critical_phase_id"))
+            if event_name == "rlt_critical_success_reward_boosted" and rollout_id is not None:
+                row = self._get_or_create_rollout_row(rollout_id, timestamp)
+                if critical_phase_id is not None:
+                    row.critical_phase_id = critical_phase_id
+                if server_episode_id is not None:
+                    row.server_episode_id = server_episode_id
+                row.label = "success"
+                row.discard = False
+                row.reward_boosted = True
+                row.boost_reward = _to_float(event.get("reward"))
+                if rlt_checkpoint_step is not None:
+                    row.rlt_checkpoint_step = rlt_checkpoint_step
+                return
+            if event_name == "rlt_critical_success_reward_boost_rejected" and rollout_id is not None:
+                row = self._get_or_create_rollout_row(rollout_id, timestamp)
+                if critical_phase_id is not None:
+                    row.critical_phase_id = critical_phase_id
+                if server_episode_id is not None:
+                    row.server_episode_id = server_episode_id
+                return
             if server_episode_id is not None and client_episode_id is not None:
                 for row in self.rollouts.values():
                     if row.critical_phase_id == client_episode_id:
@@ -215,9 +239,14 @@ class TuiState:
         if event_name == "rlt_critical_phase_labeled":
             row.label = str(event.get("label") or "open")
             row.discard = False
+            reward = _to_float(event.get("reward"))
+            row.reward_boosted = bool(row.label == "success" and reward is not None and reward > 1.0)
+            row.boost_reward = reward if row.reward_boosted else None
         elif event_name == "rlt_critical_phase_discarded":
             row.label = "discarded"
             row.discard = True
+            row.reward_boosted = False
+            row.boost_reward = None
 
     def apply_trajectory_event(self, event: dict[str, Any]) -> None:
         event_type = str(event.get("type", ""))
@@ -656,17 +685,38 @@ def _write_rollout_review_edit(
     )
 
 
+def _latest_rollout_boost_payload(state: TuiState) -> dict[str, Any] | None:
+    row = _latest_reviewable_rollout(state)
+    if row is None:
+        state.status_events.append(f"{_format_time(time.time())} tui: no rollout row to boost")
+        return None
+    if row.label != "success" or row.discard:
+        state.status_events.append(
+            f"{_format_time(time.time())} tui: latest rollout is not a kept success"
+        )
+        return None
+    if row.reward_boosted:
+        state.status_events.append(f"{_format_time(time.time())} tui: latest success already boosted")
+        return None
+    return {
+        "rollout_id": row.rollout,
+        "critical_phase_id": row.critical_phase_id,
+        "server_episode_id": row.server_episode_id,
+        "reward": 2.0,
+    }
+
+
 def _format_rollouts_panel(state: TuiState) -> str:
     rows = _ordered_rollout_rows(state)
     lines = [
         "[b]Rollouts[/b]",
-        "s: mark latest success   f: mark latest fail   d: toggle latest discard",
+        "s: mark latest success   f: mark latest fail   d: toggle latest discard   b: boost latest success",
         "",
         (
             f"{'rollout':>7}  {'rollout_start':19}  {'critical_start':>14}  "
-            f"{'critical_end':>12}  {'ckpt':>8}  {'label':>7}  {'discard':>7}"
+            f"{'critical_end':>12}  {'ckpt':>8}  {'label':>7}  {'discard':>7}  {'boost':>8}"
         ),
-        "-" * 90,
+        "-" * 101,
     ]
     if not rows:
         lines.append("No rollout rows yet")
@@ -680,7 +730,8 @@ def _format_rollouts_panel(state: TuiState) -> str:
             f"{_format_seconds(row.critical_end_s):>12}  "
             f"{_format_checkpoint_step(row.rlt_checkpoint_step):>8}  "
             f"{_display_rollout_label(row.label):>7}  "
-            f"{str(bool(row.discard)).lower():>7}"
+            f"{str(bool(row.discard)).lower():>7}  "
+            f"{(_format_compact_float(row.boost_reward) if row.reward_boosted else 'no'):>8}"
         )
     return "\n".join(lines)
 
@@ -854,7 +905,12 @@ def _run_trajectory_listener(
     asyncio.run(_trajectory_listener_loop(ws_url, event_queue, stop_event))
 
 
-def _write_control_command(control_file: Path | None, command: str, state: TuiState) -> None:
+def _write_control_command(
+    control_file: Path | None,
+    command: str,
+    state: TuiState,
+    **fields: Any,
+) -> None:
     label = _control_command_label(command, state)
     if control_file is None:
         state.status_events.append(f"{_format_time(time.time())} tui: control disabled ({label})")
@@ -864,6 +920,7 @@ def _write_control_command(control_file: Path | None, command: str, state: TuiSt
         "ts": time.time(),
         "source": "drtc_tui",
         "command": command,
+        **fields,
     }
     try:
         control_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1237,6 +1294,7 @@ def _run_textual(
             Binding("5", "robot_intervention", "Intervention"),
             Binding("6", "training_toggle", "Train start/pause"),
             Binding("7", "rlt_actor_toggle", "RLT head on/off"),
+            Binding("b", "boost_latest_success", "Boost success"),
             Binding("1", "robot_success", "Episode success"),
             Binding("0", "robot_failure", "Fail critical"),
             Binding("9", "robot_discard", "Discard critical"),
@@ -1379,6 +1437,7 @@ def _run_textual(
                 "5: toggle intervention\n"
                 "6: start/pause RLT training\n"
                 "7: enable/disable RLT head\n"
+                "b: boost latest success reward\n"
                 "1: episode success\n"
                 "0: critical failure/keep\n"
                 "9: discard critical\n"
@@ -1436,6 +1495,14 @@ def _run_textual(
 
         def action_rlt_actor_toggle(self) -> None:
             self._send_robot_command("toggle_rlt_actor")
+
+        def action_boost_latest_success(self) -> None:
+            payload = _latest_rollout_boost_payload(self.state)
+            if payload is None:
+                self.refresh_dashboard()
+                return
+            _write_control_command(control_file, "boost_success_reward", self.state, **payload)
+            self.refresh_dashboard()
 
     return int(DrtcTuiApp().run())
 

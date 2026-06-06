@@ -49,7 +49,13 @@ from .drtc_status import emit_control
 logger = logging.getLogger(__name__)
 
 _CONTROL_ENV = "LEROBOT_DRTC_CONTROL_FILE"
-_BROWSER_CONTROL_COMMANDS = {"success", "failure", "discard_episode", "set_rlt_hparams"}
+_BROWSER_CONTROL_COMMANDS = {
+    "success",
+    "failure",
+    "discard_episode",
+    "boost_success_reward",
+    "set_rlt_hparams",
+}
 _RLT_HPARAM_CONTROL_FIELDS = {
     "beta",
     "rlt_bc_beta",
@@ -171,6 +177,7 @@ class TrajectoryVizServer:
             "row_key": data.get("row_key"),
             "rollout_id": data.get("rollout_id"),
             "critical_phase_id": data.get("critical_phase_id"),
+            "server_episode_id": data.get("server_episode_id"),
             "timestamp": time.time(),
         }
         if command not in _BROWSER_CONTROL_COMMANDS:
@@ -205,6 +212,8 @@ class TrajectoryVizServer:
             row_key=data.get("row_key"),
             rollout_id=data.get("rollout_id"),
             critical_phase_id=data.get("critical_phase_id"),
+            server_episode_id=data.get("server_episode_id"),
+            reward=data.get("reward"),
             **override_fields,
         )
         return {

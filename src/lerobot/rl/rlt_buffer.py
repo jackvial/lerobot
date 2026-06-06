@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import random
 from collections import deque
 from dataclasses import dataclass
@@ -65,7 +66,7 @@ def _warn_malformed_review_entry(sidecar_path: Path, episode_id: object, reason:
 
 def _load_review_sidecar_entries(
     sidecar_path: Path, valid_episode_ids: set[int]
-) -> dict[int, tuple[str, bool]]:
+) -> dict[int, tuple[str, bool, float | None]]:
     try:
         with sidecar_path.open("r", encoding="utf-8") as f:
             sidecar = json.load(f)
@@ -92,7 +93,7 @@ def _load_review_sidecar_entries(
         _LOGGER.warning("Ignoring malformed RLT review sidecar %s: expected episodes object", sidecar_path)
         return {}
 
-    entries: dict[int, tuple[str, bool]] = {}
+    entries: dict[int, tuple[str, bool, float | None]] = {}
     for episode_key, entry in episodes.items():
         try:
             episode_id = int(episode_key)
@@ -120,7 +121,22 @@ def _load_review_sidecar_entries(
         if not isinstance(deleted, bool):
             _warn_malformed_review_entry(sidecar_path, episode_key, "deleted must be a boolean")
             continue
-        entries[episode_id] = (label, deleted)
+        reward = entry.get("reward")
+        reward_value = None
+        if reward is not None:
+            try:
+                reward_value = float(reward)
+            except (TypeError, ValueError):
+                _warn_malformed_review_entry(sidecar_path, episode_key, "reward must be a number")
+                continue
+            if not math.isfinite(reward_value) or (label == "success" and reward_value <= 0.0):
+                _warn_malformed_review_entry(
+                    sidecar_path, episode_key, "reward must be finite and positive for success labels"
+                )
+                continue
+            if label != "success":
+                reward_value = None
+        entries[episode_id] = (label, deleted, reward_value)
     return entries
 
 
@@ -250,6 +266,67 @@ class RLTReplayBuffer:
         for sample in samples:
             self.add(sample)
 
+    def apply_episode_review(
+        self,
+        episode_id: int,
+        *,
+        label: str,
+        deleted: bool = False,
+        reward: float | None = None,
+    ) -> int:
+        """Apply one operator review edit to matching episode samples.
+
+        Returns the number of samples removed or updated.
+        """
+        if label not in _RLT_REVIEW_LABELS:
+            raise ValueError(f"label must be one of {sorted(_RLT_REVIEW_LABELS)}, got {label!r}")
+        reward_value = None
+        if reward is not None:
+            reward_value = float(reward)
+            if not math.isfinite(reward_value) or reward_value <= 0.0:
+                raise ValueError(f"reward must be a positive finite number, got {reward!r}")
+
+        samples = list(self._samples)
+        indices = [
+            index
+            for index, sample in enumerate(samples)
+            if sample.episode_id is not None and int(sample.episode_id) == int(episode_id)
+        ]
+        if not indices:
+            return 0
+
+        if deleted:
+            deleted_indices = set(indices)
+            self._samples = deque(
+                [sample for index, sample in enumerate(samples) if index not in deleted_indices],
+                maxlen=self.capacity,
+            )
+            return len(indices)
+
+        terminal_index = next(
+            (index for index in reversed(indices) if samples[index].done),
+            indices[-1],
+        )
+        for index in indices:
+            sample = samples[index]
+            sample.success = label == "success"
+            sample.failure = label == "failure"
+            if label == "open":
+                sample.done = False
+                sample.reward = 0.0
+            elif index == terminal_index:
+                sample.done = True
+                if label == "success":
+                    sample.reward = reward_value if reward_value is not None else 1.0
+                else:
+                    sample.reward = 0.0
+            else:
+                sample.done = False
+                sample.reward = 0.0
+
+        self._samples = deque(samples, maxlen=self.capacity)
+        return len(indices)
+
     def state_dict(self) -> dict[str, Any]:
         def _sample_state(sample: RLTReplaySample) -> dict[str, Any]:
             state: dict[str, Any] = {
@@ -325,37 +402,11 @@ class RLTReplayBuffer:
             for sample in self._samples
             if sample.episode_id is None or not review_entries.get(int(sample.episode_id), ("open", False))[1]
         ]
-        samples_by_episode: dict[int, list[int]] = {}
-        for index, sample in enumerate(samples):
-            if sample.episode_id is None:
-                continue
-            episode_id = int(sample.episode_id)
-            entry = review_entries.get(episode_id)
-            if entry is None or entry[1]:
-                continue
-            samples_by_episode.setdefault(episode_id, []).append(index)
-
-        for episode_id, indices in samples_by_episode.items():
-            label = review_entries[episode_id][0]
-            terminal_index = next(
-                (index for index in reversed(indices) if samples[index].done),
-                indices[-1],
-            )
-            for index in indices:
-                sample = samples[index]
-                sample.success = label == "success"
-                sample.failure = label == "failure"
-                if label == "open":
-                    sample.done = False
-                    sample.reward = 0.0
-                elif index == terminal_index:
-                    sample.done = True
-                    sample.reward = 1.0 if label == "success" else 0.0
-                else:
-                    sample.done = False
-                    sample.reward = 0.0
-
         self._samples = deque(samples, maxlen=self.capacity)
+        for episode_id, (label, deleted, reward) in review_entries.items():
+            if deleted:
+                continue
+            self.apply_episode_review(episode_id, label=label, deleted=False, reward=reward)
         _LOGGER.info(
             "Applied RLT review sidecar %s: samples %d -> %d, updated_episodes=%d",
             sidecar_path,

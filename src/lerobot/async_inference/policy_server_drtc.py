@@ -79,6 +79,7 @@ from .utils.trajectory_viz import TrajectoryVizServer
 from .utils.viz_utils import compute_prefix_weights_for_viz
 
 _INITIAL_K = -(2**63)
+_RLT_SUCCESS_REWARD_BOOST = 2.0
 
 
 def _safe_wandb_artifact_name(name: str) -> str:
@@ -842,6 +843,123 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
                 persist=False,
             )
 
+    @staticmethod
+    def _rlt_int_or_none(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _rlt_reward_or_default(value: Any, default: float) -> float:
+        if value is None:
+            return default
+        try:
+            reward = float(value)
+        except (TypeError, ValueError):
+            return default
+        if not np.isfinite(reward) or reward <= 0.0:
+            return default
+        return reward
+
+    def _apply_rlt_success_reward_boost(self, event: dict[str, Any]) -> None:
+        reward = self._rlt_reward_or_default(
+            event.get("reward") if "reward" in event else event.get("boost_reward"),
+            _RLT_SUCCESS_REWARD_BOOST,
+        )
+        server_episode_id = self._rlt_int_or_none(
+            event.get("server_episode_id") if "server_episode_id" in event else event.get("episode_id")
+        )
+        client_episode_id = self._rlt_int_or_none(
+            event.get("client_episode_id") if "client_episode_id" in event else event.get("critical_phase_id")
+        )
+        rollout_id = self._rlt_int_or_none(event.get("rollout_id"))
+
+        candidate_episode_ids: list[int] = []
+        for candidate in (
+            server_episode_id,
+            None
+            if client_episode_id is None
+            else client_episode_id + int(getattr(self, "_rlt_episode_id_offset", 0) or 0),
+            client_episode_id,
+        ):
+            if candidate is not None and candidate not in candidate_episode_ids:
+                candidate_episode_ids.append(candidate)
+
+        if not candidate_episode_ids:
+            self._emit_rlt_status(
+                "rlt_critical_success_reward_boost_rejected",
+                command="boost_success_reward",
+                reason="missing_episode_id",
+                rollout_id=rollout_id,
+                critical_phase_id=client_episode_id,
+            )
+            return
+
+        matched_episode_id = None
+        updated_online_samples = 0
+        updated_archive_samples = 0
+        replay_size = len(getattr(self, "_rlt_replay", []))
+        with self._rlt_replay_lock:
+            self._ensure_rlt_replay_components()
+            for episode_id in candidate_episode_ids:
+                updated_online_samples = self._rlt_online_replay.apply_episode_review(
+                    episode_id,
+                    label="success",
+                    deleted=False,
+                    reward=reward,
+                )
+                if updated_online_samples > 0:
+                    matched_episode_id = episode_id
+                    break
+            if matched_episode_id is not None:
+                replay_size = self._rebuild_rlt_training_replay_locked()
+
+        if matched_episode_id is None:
+            self._emit_rlt_status(
+                "rlt_critical_success_reward_boost_rejected",
+                command="boost_success_reward",
+                reason="episode_not_found",
+                rollout_id=rollout_id,
+                critical_phase_id=client_episode_id,
+                candidate_episode_ids=candidate_episode_ids,
+                reward=reward,
+            )
+            return
+
+        if getattr(self, "_rlt_review_archive", None):
+            archive = RLTReplayBuffer(capacity=max(1, len(self._rlt_review_archive)))
+            archive.extend(self._rlt_review_archive)
+            updated_archive_samples = archive.apply_episode_review(
+                matched_episode_id,
+                label="success",
+                deleted=False,
+                reward=reward,
+            )
+            if updated_archive_samples > 0:
+                self._rlt_review_archive = archive.samples()
+                self._rlt_review_archive_dirty = True
+
+        self._rlt_buffer_dirty = True
+        self._rlt_completed_episodes.add(int(matched_episode_id))
+        self._persist_rlt_replay(reason="reward_boost")
+        self._persist_rlt_review_archive(reason="reward_boost")
+        self._emit_rlt_status(
+            "rlt_critical_success_reward_boosted",
+            command="boost_success_reward",
+            rollout_id=rollout_id,
+            critical_phase_id=client_episode_id,
+            episode_id=int(matched_episode_id),
+            client_episode_id=client_episode_id,
+            reward=float(reward),
+            reward_boosted=True,
+            updated_samples=updated_online_samples,
+            updated_archive_samples=updated_archive_samples,
+            rlt_replay_size=replay_size,
+        )
+
     def _poll_rlt_training_controls(self) -> None:
         self._poll_rlt_override_file()
         reader = getattr(self, "_tui_control_reader", None)
@@ -874,6 +992,8 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
                     source=str(event.get("source") or "control_side_channel"),
                     persist=True,
                 )
+            elif command == "boost_success_reward":
+                self._apply_rlt_success_reward_boost(event)
 
     def _init_rlt_wandb(self, policy_specs: RemotePolicyConfig) -> None:
         if self._rlt_wandb_run is not None:

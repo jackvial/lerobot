@@ -226,6 +226,23 @@ def test_review_sidecar_open_episode_changed_to_outcome_updates_samples(
     assert [sample.reward for sample in samples] == [0.0, expected_reward]
 
 
+def test_review_sidecar_success_reward_override_updates_terminal_reward(tmp_path):
+    replay = RLTReplayBuffer(capacity=2)
+    replay.add(_v2_sample(offset=0.0, episode_id=14, done=False, success=False, failure=False))
+    replay.add(_v2_sample(offset=1.0, episode_id=14, done=True, success=True, failure=False))
+    path = tmp_path / "rlt_online_replay.pt"
+    replay.save(path)
+    _write_review_sidecar(path, {"14": {"label": "success", "deleted": False, "reward": 2.0}})
+
+    loaded = RLTReplayBuffer.load(path, capacity=2, apply_review_sidecar=True)
+    samples = loaded.samples()
+
+    assert [sample.success for sample in samples] == [True, True]
+    assert [sample.failure for sample in samples] == [False, False]
+    assert [sample.done for sample in samples] == [False, True]
+    assert [sample.reward for sample in samples] == [0.0, 2.0]
+
+
 def test_review_sidecar_outcome_changed_to_open_clears_flags(tmp_path):
     replay = RLTReplayBuffer(capacity=2)
     replay.add(_v2_sample(offset=0.0, episode_id=3, done=False, success=True, failure=False))

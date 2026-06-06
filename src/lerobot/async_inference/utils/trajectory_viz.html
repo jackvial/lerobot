@@ -623,7 +623,7 @@
             width: 100%;
             border-collapse: collapse;
             font-size: 12px;
-            min-width: 1120px;
+            min-width: 1240px;
         }
 
         .rollouts-table th,
@@ -680,6 +680,21 @@
 
         .rollout-action.discard {
             color: var(--ochre);
+        }
+
+        .rollout-action.boost {
+            color: var(--primary-blue);
+        }
+
+        .rollout-action:disabled {
+            color: var(--text-muted);
+            cursor: not-allowed;
+            opacity: 0.55;
+        }
+
+        .rollout-boosted {
+            color: var(--primary-blue);
+            font-weight: 800;
         }
 
         .rollout-label.success {
@@ -1474,12 +1489,13 @@
                         <th>Duration</th>
                         <th>Label</th>
                         <th>Discard</th>
+                        <th>Boosted</th>
                         <th>Transitions</th>
                         <th>Action</th>
                     </tr>
                 </thead>
                 <tbody id="rollouts-table-body">
-                    <tr><td colspan="12"><div class="rollouts-empty">Waiting for rollout events...</div></td></tr>
+                    <tr><td colspan="13"><div class="rollouts-empty">Waiting for rollout events...</div></td></tr>
                 </tbody>
             </table>
         </div>
@@ -3124,6 +3140,8 @@
                 row.criticalEndS = numericOrNull(data.critical_end_s) ?? row.criticalEndS;
                 row.label = String(data.label || (data.success ? 'success' : data.failure ? 'failure' : 'open'));
                 row.reward = numericOrNull(data.reward);
+                row.rewardBoosted = Number(row.reward) > 1;
+                row.boostReward = row.rewardBoosted ? row.reward : row.boostReward;
                 row.queuedTransitions = numericOrNull(data.queued_transitions);
                 row.transitions = row.queuedTransitions ?? row.transitions;
                 row.discard = false;
@@ -3132,8 +3150,19 @@
                 row.criticalEndS = numericOrNull(data.critical_end_s) ?? row.criticalEndS;
                 row.label = 'discarded';
                 row.discard = true;
+                row.rewardBoosted = false;
+                row.boostReward = null;
                 row.transitions = numericOrNull(data.buffered_transitions_dropped) ?? row.transitions;
                 row.status = 'discarded';
+            } else if (eventName === 'rlt_critical_success_reward_boosted') {
+                row.label = 'success';
+                row.reward = numericOrNull(data.reward) ?? row.reward;
+                row.rewardBoosted = true;
+                row.boostReward = row.reward;
+                row.discard = false;
+                row.status = 'boosted';
+            } else if (eventName === 'rlt_critical_success_reward_boost_rejected') {
+                row.status = 'boost rejected';
             }
 
             renderRolloutsTable();
@@ -3149,7 +3178,7 @@
                 .reverse();
 
             if (rows.length === 0) {
-                body.innerHTML = '<tr><td colspan="12"><div class="rollouts-empty">Waiting for rollout events...</div></td></tr>';
+                body.innerHTML = '<tr><td colspan="13"><div class="rollouts-empty">Waiting for rollout events...</div></td></tr>';
                 return;
             }
 
@@ -3159,6 +3188,11 @@
                 const duration = row.criticalStartS !== undefined && row.criticalEndS !== undefined
                     ? formatSeconds(Number(row.criticalEndS) - Number(row.criticalStartS))
                     : formatSeconds(row.rolloutDurationS);
+                const isSuccess = label === 'success';
+                const boosted = Boolean(row.rewardBoosted || Number(row.reward) > 1);
+                const boostReward = numericOrNull(row.boostReward ?? row.reward);
+                const boostedText = boosted ? `yes (${formatValue(boostReward ?? 2)})` : 'no';
+                const boostDisabled = !isSuccess || row.discard || boosted ? 'disabled' : '';
                 return `
                     <tr>
                         <td>${escapeHtml(row.rolloutId ?? '--')}</td>
@@ -3171,12 +3205,14 @@
                         <td>${escapeHtml(duration)}</td>
                         <td><span class="rollout-label ${escapeHtml(label)}">${escapeHtml(label)}</span></td>
                         <td>${row.discard ? 'true' : 'false'}</td>
+                        <td><span class="${boosted ? 'rollout-boosted' : ''}">${escapeHtml(boostedText)}</span></td>
                         <td>${escapeHtml(row.transitions ?? row.queuedTransitions ?? '--')}</td>
                         <td>
                             <div class="rollout-actions">
                                 <button type="button" class="rollout-action success" data-rollout-action="success" data-rollout-key="${rowKey}">Success</button>
                                 <button type="button" class="rollout-action failure" data-rollout-action="failure" data-rollout-key="${rowKey}">Fail</button>
                                 <button type="button" class="rollout-action discard" data-rollout-action="discard_episode" data-rollout-key="${rowKey}">Discard</button>
+                                <button type="button" class="rollout-action boost" data-rollout-action="boost_success_reward" data-rollout-key="${rowKey}" ${boostDisabled}>Boost</button>
                             </div>
                         </td>
                     </tr>
@@ -3188,6 +3224,7 @@
             if (command === 'success') return 'Success';
             if (command === 'failure') return 'Fail';
             if (command === 'discard_episode') return 'Discard';
+            if (command === 'boost_success_reward') return 'Boost';
             if (command === 'set_rlt_hparams') return 'RLT tuning';
             return command || 'Action';
         }
@@ -3295,6 +3332,8 @@
                 row_key: rowKey,
                 rollout_id: row.rolloutId ?? null,
                 critical_phase_id: row.criticalPhaseId ?? null,
+                server_episode_id: row.serverEpisodeId ?? null,
+                reward: command === 'boost_success_reward' ? 2.0 : null,
                 source: 'browser_dashboard',
                 timestamp: Date.now() / 1000,
             }));

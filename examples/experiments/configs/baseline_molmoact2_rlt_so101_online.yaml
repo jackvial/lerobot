@@ -42,7 +42,7 @@ pretrained_name_or_path: /home/jack/code/lerobot/outputs/molmoact2_so101_placemo
 rlt_enabled: true
 rlt_embedding_checkpoint: outputs/molmoact2_rlt_embedding/rlt_embedding_step_010000.pt
 rlt_head_checkpoint:
-rlt_resume_head_checkpoint: true
+rlt_resume_head_checkpoint: false
 rlt_chunk_size: 10
 rlt_token_dim: 512
 rlt_autoencoder_dim: 512
@@ -58,9 +58,9 @@ rlt_num_critics: 2
 rlt_critic_layer_norm: true
 rlt_q_target_clip: true
 rlt_abort_reward: -1.0
-rlt_bc_beta: 0.05
+rlt_bc_beta: 0.8
 rlt_bc_reduction: sum
-rlt_bc_action_weights: [1, 4, 1, 4, 1, 0.2]
+rlt_bc_action_weights: [1, 4, 1, 4, 1, 1]
 rlt_jerk_beta: 10.0
 
 # Keep dropout off in residual mode: zeroing the reference chunk makes the
@@ -82,9 +82,9 @@ rlt_success_sample_fraction: 0.0
 rlt_intervention_sample_fraction: 0.0
 rlt_train_freq_s: 2.0
 rlt_save_freq_steps: 10
-rlt_output_dir: outputs/rlt_molmoact2_so101_online_20260602_first47_residual_paperish_v13
-rlt_demo_buffer_path: outputs/rlt_molmoact2_so101_online/rlt_demo_replay_20260831_v3_first47_residual_paperish_v13.pt
-rlt_online_buffer_path: outputs/rlt_molmoact2_so101_online/rlt_online_replay_20260831_v3_online_residual_paperish_v13.pt
+rlt_output_dir: outputs/rlt_molmoact2_so101_online_20260602_first47_residual_paperish_v15
+rlt_demo_buffer_path: outputs/rlt_molmoact2_so101_online/rlt_demo_replay_20260831_v3_first47_residual_paperish_v15.pt
+rlt_online_buffer_path: outputs/rlt_molmoact2_so101_online/rlt_online_replay_20260831_v3_online_residual_paperish_v15.pt
 rlt_online_buffer_save_freq_transitions: 50
 rlt_persist_buffer_on_shutdown: true
 
@@ -92,13 +92,13 @@ rlt_persist_buffer_on_shutdown: true
 rlt_wandb_enabled: true
 rlt_wandb_project: lerobot-rlt
 rlt_wandb_entity:
-rlt_wandb_run_name: baseline_molmoact2_rlt_so101_online_residual_paperish_v13
+rlt_wandb_run_name: baseline_molmoact2_rlt_so101_online_residual_paperish_v15
 rlt_wandb_mode: online
 
 # Optional review capture for offline episode inspection.
 rlt_review_capture_enabled: true
 rlt_review_jpeg_quality: 80
-rlt_review_archive_path: outputs/rlt_molmoact2_so101_online/rlt_online_replay_20260831_v3_online_residual_paperish_v13_archive.pt
+rlt_review_archive_path: outputs/rlt_molmoact2_so101_online/rlt_online_replay_20260831_v3_online_residual_paperish_v15_archive.pt
 
 rlt_actor_lr: 0.00002
 rlt_critic_lr: 0.0001
