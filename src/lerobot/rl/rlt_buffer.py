@@ -157,9 +157,7 @@ class RLTReplayBuffer:
                 episode_id=None if sample.episode_id is None else int(sample.episode_id),
                 success=None if sample.success is None else bool(sample.success),
                 failure=None if sample.failure is None else bool(sample.failure),
-                chunk_start_step=None
-                if sample.chunk_start_step is None
-                else int(sample.chunk_start_step),
+                chunk_start_step=None if sample.chunk_start_step is None else int(sample.chunk_start_step),
                 rlt_checkpoint_step=None
                 if sample.rlt_checkpoint_step is None
                 else int(sample.rlt_checkpoint_step),
@@ -189,15 +187,21 @@ class RLTReplayBuffer:
             )
 
         all_samples = list(self._samples)
-        chosen: list[int] = []
         chosen_set: set[int] = set()
+        chosen: list[int] = []
 
         def choose(indices: list[int], count: int) -> None:
             if count <= 0:
                 return
+
+            # Filter if not already chosen
             candidates = [index for index in indices if index not in chosen_set]
+
+            # If no remaining canidates exit early
             if not candidates:
                 return
+
+            # Sample count
             selected = random.sample(candidates, min(count, len(candidates)))
             chosen.extend(selected)
             chosen_set.update(selected)
@@ -228,9 +232,9 @@ class RLTReplayBuffer:
             "next_reference_chunk": torch.stack([s.next_reference_chunk for s in samples], dim=0),
             "reward": torch.tensor([s.reward for s in samples], dtype=torch.float32).unsqueeze(-1),
             "done": torch.tensor([s.done for s in samples], dtype=torch.float32).unsqueeze(-1),
-            "is_intervention": torch.tensor(
-                [s.is_intervention for s in samples], dtype=torch.float32
-            ).view(-1, 1, 1),
+            "is_intervention": torch.tensor([s.is_intervention for s in samples], dtype=torch.float32).view(
+                -1, 1, 1
+            ),
             "success": torch.tensor([bool(s.success) for s in samples], dtype=torch.float32).unsqueeze(-1),
             "failure": torch.tensor([bool(s.failure) for s in samples], dtype=torch.float32).unsqueeze(-1),
         }
@@ -264,9 +268,7 @@ class RLTReplayBuffer:
                 "episode_id": None if sample.episode_id is None else int(sample.episode_id),
                 "success": None if sample.success is None else bool(sample.success),
                 "failure": None if sample.failure is None else bool(sample.failure),
-                "chunk_start_step": None
-                if sample.chunk_start_step is None
-                else int(sample.chunk_start_step),
+                "chunk_start_step": None if sample.chunk_start_step is None else int(sample.chunk_start_step),
                 "rlt_checkpoint_step": None
                 if sample.rlt_checkpoint_step is None
                 else int(sample.rlt_checkpoint_step),
@@ -310,7 +312,9 @@ class RLTReplayBuffer:
         if not sidecar_path.exists():
             return
 
-        valid_episode_ids = {int(sample.episode_id) for sample in self._samples if sample.episode_id is not None}
+        valid_episode_ids = {
+            int(sample.episode_id) for sample in self._samples if sample.episode_id is not None
+        }
         review_entries = _load_review_sidecar_entries(sidecar_path, valid_episode_ids)
         if not review_entries:
             return

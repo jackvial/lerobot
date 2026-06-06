@@ -42,7 +42,7 @@ pretrained_name_or_path: /home/jack/code/lerobot/outputs/molmoact2_so101_placemo
 rlt_enabled: true
 rlt_embedding_checkpoint: outputs/molmoact2_rlt_embedding/rlt_embedding_step_010000.pt
 rlt_head_checkpoint:
-rlt_resume_head_checkpoint: false
+rlt_resume_head_checkpoint: true
 rlt_chunk_size: 10
 rlt_token_dim: 512
 rlt_autoencoder_dim: 512
@@ -73,7 +73,8 @@ rlt_online_collection_enabled: true
 rlt_online_training_enabled: true
 rlt_warmup_episodes: 0
 rlt_warmup_transitions: 64
-rlt_replay_capacity: 50000
+rlt_replay_capacity: 512
+rlt_demo_replay_fraction: 0.25
 rlt_batch_size: 64
 rlt_utd_ratio: 2
 rlt_critic_updates_per_actor: 2

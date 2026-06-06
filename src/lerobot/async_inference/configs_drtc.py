@@ -362,6 +362,16 @@ class RobotClientDrtcConfig:
         default=10000,
         metadata={"help": "Maximum number of compact RLT transitions kept in server replay."},
     )
+    rlt_demo_replay_fraction: float = field(
+        default=0.0,
+        metadata={
+            "help": (
+                "Fraction of the server training replay reserved for evenly spaced samples from "
+                "rlt_demo_buffer_path. The remaining slots are a recent FIFO window of online "
+                "transitions. 0 preserves legacy mixed FIFO behavior."
+            )
+        },
+    )
     rlt_batch_size: int = field(
         default=64,
         metadata={"help": "RLT online training batch size."},
@@ -874,6 +884,11 @@ class RobotClientDrtcConfig:
             raise ValueError(f"rlt_warmup_transitions must be non-negative, got {self.rlt_warmup_transitions}")
         if self.rlt_replay_capacity <= 0:
             raise ValueError(f"rlt_replay_capacity must be positive, got {self.rlt_replay_capacity}")
+        if not 0 <= self.rlt_demo_replay_fraction < 1:
+            raise ValueError(
+                "rlt_demo_replay_fraction must be in [0, 1), "
+                f"got {self.rlt_demo_replay_fraction}"
+            )
         if self.rlt_batch_size <= 0:
             raise ValueError(f"rlt_batch_size must be positive, got {self.rlt_batch_size}")
         if self.rlt_utd_ratio <= 0:

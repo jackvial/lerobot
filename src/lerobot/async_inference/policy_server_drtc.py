@@ -346,6 +346,7 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
         self._rlt_success_sample_fraction = 0.0
         self._rlt_intervention_sample_fraction = 0.0
         self._rlt_intervention_reference_mode = "executed"
+        self._rlt_demo_replay_fraction = 0.0
         self._rlt_train_freq_s = 1.0
         self._rlt_save_freq_steps = 500
         self._rlt_output_dir = "outputs/rlt_online"
@@ -387,6 +388,8 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
         self._rlt_buffer_dirty = False
         self._rlt_demo_replay_size = 0
         self._rlt_online_replay_size = 0
+        self._rlt_demo_replay_samples: list[RLTReplaySample] = []
+        self._rlt_online_replay = RLTReplayBuffer(capacity=10000)
         self._rlt_episode_id_offset = 0
         self._rlt_completed_episodes: set[int] = set()
         self._rlt_context_cache = RLTSourceContextCache(max_size=256)
@@ -533,23 +536,32 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
 
     def _emit_rlt_status(self, event: str, **fields: Any) -> None:
         with self._rlt_replay_lock:
+            self._ensure_rlt_replay_components()
             replay_size = len(self._rlt_replay)
+            demo_replay_retained_size = len(self._rlt_training_demo_samples())
+            online_replay_size = len(self._rlt_online_replay)
+            online_replay_capacity = self._rlt_online_replay.capacity
         policy = getattr(self, "policy", None)
         cfg = getattr(policy, "config", None)
         completed_episodes = len(self._rlt_completed_episodes)
-        required_replay_transitions = max(int(self._rlt_batch_size), int(self._rlt_warmup_transitions))
-        required_warmup_episodes = int(self._rlt_warmup_episodes)
+        batch_size = int(getattr(self, "_rlt_batch_size", 64))
+        warmup_transitions = int(getattr(self, "_rlt_warmup_transitions", 128))
+        required_replay_transitions = max(batch_size, warmup_transitions)
+        required_warmup_episodes = int(getattr(self, "_rlt_warmup_episodes", 1))
         training_operator_enabled = bool(getattr(self, "_rlt_training_operator_enabled", True))
         training_replay_ready = replay_size >= required_replay_transitions
         training_episode_ready = completed_episodes >= required_warmup_episodes
-        training_optimizers_ready = self._rlt_actor_optimizer is not None and self._rlt_critic_optimizer is not None
+        training_optimizers_ready = (
+            getattr(self, "_rlt_actor_optimizer", None) is not None
+            and getattr(self, "_rlt_critic_optimizer", None) is not None
+        )
         status_fields = {
             "rlt_replay_size": replay_size,
             "rlt_replay_capacity": self._rlt_replay_capacity,
             "rlt_completed_episodes": completed_episodes,
             "rlt_warmup_episodes": required_warmup_episodes,
-            "rlt_warmup_transitions": int(self._rlt_warmup_transitions),
-            "rlt_batch_size": int(self._rlt_batch_size),
+            "rlt_warmup_transitions": warmup_transitions,
+            "rlt_batch_size": batch_size,
             "rlt_required_replay_transitions": required_replay_transitions,
             "rlt_replay_warmup_remaining": max(0, required_replay_transitions - replay_size),
             "rlt_episode_warmup_remaining": max(0, required_warmup_episodes - completed_episodes),
@@ -587,7 +599,10 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             "rlt_loss_abs_limit": getattr(self, "_rlt_loss_abs_max", None),
             "rlt_actor_disabled_by_safety": self._rlt_actor_disabled_by_safety,
             "rlt_demo_replay_size": self._rlt_demo_replay_size,
-            "rlt_online_replay_size": self._rlt_online_replay_size,
+            "rlt_demo_replay_retained_size": demo_replay_retained_size,
+            "rlt_demo_replay_fraction": getattr(self, "_rlt_demo_replay_fraction", 0.0),
+            "rlt_online_replay_size": online_replay_size,
+            "rlt_online_replay_capacity": online_replay_capacity,
             "rlt_accepted_transitions": self._rlt_accepted_transitions,
             "rlt_accepted_frames": getattr(self, "_rlt_accepted_frames", 0),
             "rlt_critic_updates_per_actor": getattr(self, "_rlt_critic_updates_per_actor", 1),
@@ -1149,6 +1164,86 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             return "cpu"
         return target_device
 
+    def _ensure_rlt_replay_components(self) -> None:
+        if not hasattr(self, "_rlt_demo_replay_samples"):
+            self._rlt_demo_replay_samples = []
+        if not hasattr(self, "_rlt_demo_replay_fraction"):
+            self._rlt_demo_replay_fraction = 0.0
+        if not hasattr(self, "_rlt_online_replay"):
+            self._rlt_online_replay = RLTReplayBuffer(capacity=self._rlt_replay_capacity)
+
+    @staticmethod
+    def _select_evenly_spaced_rlt_samples(
+        samples: list[RLTReplaySample],
+        count: int,
+    ) -> list[RLTReplaySample]:
+        if count <= 0:
+            return []
+        if count >= len(samples):
+            return list(samples)
+        if count == 1:
+            return [samples[-1]]
+
+        last_index = len(samples) - 1
+        indices: list[int] = []
+        seen: set[int] = set()
+        for i in range(count):
+            index = int(round(i * last_index / (count - 1)))
+            if index not in seen:
+                indices.append(index)
+                seen.add(index)
+
+        if len(indices) < count:
+            for index in range(len(samples)):
+                if index in seen:
+                    continue
+                indices.append(index)
+                seen.add(index)
+                if len(indices) >= count:
+                    break
+
+        indices.sort()
+        return [samples[index] for index in indices[:count]]
+
+    def _rlt_demo_replay_quota(self) -> int:
+        self._ensure_rlt_replay_components()
+        fraction = float(getattr(self, "_rlt_demo_replay_fraction", 0.0) or 0.0)
+        if fraction <= 0.0 or not self._rlt_demo_replay_samples or self._rlt_replay_capacity <= 1:
+            return 0
+        requested = max(1, int(self._rlt_replay_capacity * fraction))
+        return min(requested, len(self._rlt_demo_replay_samples), self._rlt_replay_capacity - 1)
+
+    def _rlt_training_demo_samples(self) -> list[RLTReplaySample]:
+        self._ensure_rlt_replay_components()
+        quota = self._rlt_demo_replay_quota()
+        if quota <= 0:
+            return list(self._rlt_demo_replay_samples)
+        return self._select_evenly_spaced_rlt_samples(self._rlt_demo_replay_samples, quota)
+
+    def _rlt_online_replay_capacity(self) -> int:
+        demo_quota = self._rlt_demo_replay_quota()
+        return max(1, self._rlt_replay_capacity - demo_quota)
+
+    def _resize_rlt_online_replay_locked(self) -> None:
+        self._ensure_rlt_replay_components()
+        online_capacity = self._rlt_online_replay_capacity()
+        if self._rlt_online_replay.capacity == online_capacity:
+            return
+        samples = self._rlt_online_replay.samples()
+        self._rlt_online_replay = RLTReplayBuffer(capacity=online_capacity)
+        self._rlt_online_replay.extend(samples)
+        self._rlt_online_replay_size = len(self._rlt_online_replay)
+
+    def _rebuild_rlt_training_replay_locked(self) -> int:
+        self._ensure_rlt_replay_components()
+        self._resize_rlt_online_replay_locked()
+        replay = RLTReplayBuffer(capacity=self._rlt_replay_capacity)
+        replay.extend(self._rlt_training_demo_samples())
+        replay.extend(self._rlt_online_replay.samples())
+        self._rlt_replay = replay
+        self._rlt_online_replay_size = len(self._rlt_online_replay)
+        return len(self._rlt_replay)
+
     def _load_rlt_replay_file(self, path: str | None, *, source: str) -> int:
         if not path:
             return 0
@@ -1158,16 +1253,34 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
                 "rlt_replay_load_skipped", replay_source=source, replay_path=str(replay_path)
             )
             return 0
+        self._ensure_rlt_replay_components()
+        if source == "online":
+            load_capacity = self._rlt_online_replay_capacity()
+        elif source == "demo" and float(getattr(self, "_rlt_demo_replay_fraction", 0.0) or 0.0) > 0.0:
+            load_capacity = None
+        else:
+            load_capacity = self._rlt_replay_capacity
         loaded = RLTReplayBuffer.load(
             replay_path,
-            capacity=self._rlt_replay_capacity,
+            capacity=load_capacity,
             apply_review_sidecar=True,
         )
+        loaded_samples = loaded.samples()
         with self._rlt_replay_lock:
-            self._rlt_replay.extend(loaded.samples())
-            replay_size = len(self._rlt_replay)
+            self._ensure_rlt_replay_components()
+            if source == "demo":
+                self._rlt_demo_replay_samples = loaded_samples
+                self._rlt_demo_replay_size = len(self._rlt_demo_replay_samples)
+            elif source == "online":
+                self._rlt_online_replay = RLTReplayBuffer(capacity=self._rlt_online_replay_capacity())
+                self._rlt_online_replay.extend(loaded_samples)
+                self._rlt_online_replay_size = len(self._rlt_online_replay)
+            else:
+                self._rlt_online_replay.extend(loaded_samples)
+                self._rlt_online_replay_size = len(self._rlt_online_replay)
+            replay_size = self._rebuild_rlt_training_replay_locked()
         loaded_episode_ids = [
-            int(sample.episode_id) for sample in loaded.samples() if sample.episode_id is not None
+            int(sample.episode_id) for sample in loaded_samples if sample.episode_id is not None
         ]
         if source == "online" and loaded_episode_ids:
             self._rlt_episode_id_offset = max(self._rlt_episode_id_offset, max(loaded_episode_ids))
@@ -1208,10 +1321,9 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
         if not self._rlt_online_buffer_path or not self._rlt_buffer_dirty:
             return
         with self._rlt_replay_lock:
-            samples = self._rlt_replay.samples()
-            online_count = min(max(self._rlt_online_replay_size, 0), len(samples))
-            online_samples = samples[-online_count:] if online_count > 0 else []
-            replay = RLTReplayBuffer(capacity=self._rlt_replay_capacity)
+            self._ensure_rlt_replay_components()
+            online_samples = self._rlt_online_replay.samples()
+            replay = RLTReplayBuffer(capacity=self._rlt_online_replay.capacity)
             replay.extend(online_samples)
             replay_size = len(replay)
             replay.save(self._rlt_online_buffer_path)
@@ -1296,6 +1408,7 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
         self._rlt_intervention_sample_fraction = float(
             getattr(policy_specs, "rlt_intervention_sample_fraction", 0.0)
         )
+        self._rlt_demo_replay_fraction = float(getattr(policy_specs, "rlt_demo_replay_fraction", 0.0))
         self._rlt_intervention_reference_mode = str(
             getattr(policy_specs, "rlt_intervention_reference_mode", "executed")
         )
@@ -1356,6 +1469,8 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
         context_cache_size = int(getattr(policy_specs, "rlt_context_cache_size", 256))
         self._rlt_context_cache = RLTSourceContextCache(max_size=context_cache_size)
         with self._rlt_replay_lock:
+            self._rlt_demo_replay_samples = []
+            self._rlt_online_replay = RLTReplayBuffer(capacity=self._rlt_replay_capacity)
             self._rlt_replay = RLTReplayBuffer(capacity=self._rlt_replay_capacity)
         self._rlt_episode_id_offset = 0
         self._rlt_demo_replay_size = self._load_rlt_replay_file(self._rlt_demo_buffer_path, source="demo")
@@ -1879,13 +1994,15 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             rlt_checkpoint_step=source.rlt_checkpoint_step,
         )
         with self._rlt_replay_lock:
-            self._rlt_replay.add(sample)
-            replay_size = len(self._rlt_replay)
+            self._ensure_rlt_replay_components()
+            self._rlt_online_replay.add(sample)
+            replay_size = self._rebuild_rlt_training_replay_locked()
+            online_replay_size = len(self._rlt_online_replay)
         if self._rlt_review_archive_path:
             self._rlt_review_archive.append(sample)
             self._rlt_review_archive_dirty = True
         self._rlt_accepted_transitions += 1
-        self._rlt_online_replay_size += 1
+        self._rlt_online_replay_size = online_replay_size
         self._rlt_buffer_dirty = True
         if transition.done:
             self._rlt_completed_episodes.add(episode_id)
@@ -2206,6 +2323,8 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
         self._action_cache.clear()
         self._rlt_context_cache.clear()
         with self._rlt_replay_lock:
+            self._rlt_demo_replay_samples = []
+            self._rlt_online_replay = RLTReplayBuffer(capacity=self._rlt_replay_capacity)
             self._rlt_replay = RLTReplayBuffer(capacity=self._rlt_replay_capacity)
         self._rlt_next_context_id = 1
         self._rlt_train_step = 0

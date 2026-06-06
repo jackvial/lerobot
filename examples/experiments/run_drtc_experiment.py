@@ -183,6 +183,7 @@ class ExperimentConfig:
     rlt_warmup_episodes: int = 1
     rlt_warmup_transitions: int = 128
     rlt_replay_capacity: int = 10000
+    rlt_demo_replay_fraction: float = 0.0
     rlt_batch_size: int = 64
     rlt_utd_ratio: int = 1
     rlt_critic_updates_per_actor: int = 1
@@ -311,6 +312,7 @@ _SCALAR_FIELDS = frozenset({
     "rlt_intervention_reference_mode",
     "rlt_online_collection_enabled", "rlt_online_training_enabled",
     "rlt_warmup_episodes", "rlt_warmup_transitions", "rlt_replay_capacity",
+    "rlt_demo_replay_fraction",
     "rlt_batch_size", "rlt_utd_ratio", "rlt_critic_updates_per_actor",
     "rlt_success_sample_fraction", "rlt_intervention_sample_fraction",
     "rlt_train_freq_s", "rlt_save_freq_steps",
@@ -596,6 +598,7 @@ def create_client_config(
         rlt_warmup_episodes=config.rlt_warmup_episodes,
         rlt_warmup_transitions=config.rlt_warmup_transitions,
         rlt_replay_capacity=config.rlt_replay_capacity,
+        rlt_demo_replay_fraction=config.rlt_demo_replay_fraction,
         rlt_batch_size=config.rlt_batch_size,
         rlt_utd_ratio=config.rlt_utd_ratio,
         rlt_critic_updates_per_actor=config.rlt_critic_updates_per_actor,

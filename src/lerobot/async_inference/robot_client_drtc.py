@@ -452,6 +452,7 @@ class RobotClientDrtc:
             rlt_warmup_episodes=config.rlt_warmup_episodes,
             rlt_warmup_transitions=config.rlt_warmup_transitions,
             rlt_replay_capacity=config.rlt_replay_capacity,
+            rlt_demo_replay_fraction=config.rlt_demo_replay_fraction,
             rlt_batch_size=config.rlt_batch_size,
             rlt_utd_ratio=config.rlt_utd_ratio,
             rlt_critic_updates_per_actor=config.rlt_critic_updates_per_actor,

@@ -496,6 +496,7 @@ class RemotePolicyConfig:
     rlt_warmup_episodes: int = 1
     rlt_warmup_transitions: int = 128
     rlt_replay_capacity: int = 10000
+    rlt_demo_replay_fraction: float = 0.0
     rlt_batch_size: int = 64
     rlt_utd_ratio: int = 1
     rlt_critic_updates_per_actor: int = 1
@@ -581,6 +582,7 @@ class RemotePolicyConfig:
         self.__dict__.setdefault("rlt_warmup_episodes", 1)
         self.__dict__.setdefault("rlt_warmup_transitions", 128)
         self.__dict__.setdefault("rlt_replay_capacity", 10000)
+        self.__dict__.setdefault("rlt_demo_replay_fraction", 0.0)
         self.__dict__.setdefault("rlt_batch_size", 64)
         self.__dict__.setdefault("rlt_utd_ratio", 1)
         self.__dict__.setdefault("rlt_critic_updates_per_actor", 1)

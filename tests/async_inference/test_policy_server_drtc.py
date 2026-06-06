@@ -108,6 +108,57 @@ def test_online_replay_load_sets_episode_id_offset(tmp_path, monkeypatch):
 
 
 @require_package("grpcio", "grpc")
+def test_demo_replay_fraction_reserves_demo_slots_and_rolls_online_fifo(tmp_path, monkeypatch):
+    from lerobot.async_inference import policy_server_drtc
+
+    demo_path = tmp_path / "rlt_demo_replay.pt"
+    online_path = tmp_path / "rlt_online_replay.pt"
+    demo_replay = RLTReplayBuffer(capacity=16)
+    online_replay = RLTReplayBuffer(capacity=16)
+    for offset in range(8):
+        demo_replay.add(_sample(float(offset)))
+    for offset in range(8):
+        online_replay.add(_sample(float(100 + offset)))
+    demo_replay.save(demo_path)
+    online_replay.save(online_path)
+
+    monkeypatch.setattr(policy_server_drtc, "emit_status", lambda *_args, **_kwargs: None)
+
+    server = policy_server_drtc.PolicyServerDrtc.__new__(policy_server_drtc.PolicyServerDrtc)
+    server._rlt_replay_lock = threading.Lock()
+    server._rlt_replay_capacity = 8
+    server._rlt_demo_replay_fraction = 0.25
+    server._rlt_replay = RLTReplayBuffer(capacity=8)
+    server._rlt_demo_replay_samples = []
+    server._rlt_online_replay = RLTReplayBuffer(capacity=8)
+    server._rlt_completed_episodes = set()
+    server._rlt_train_step = 0
+    server._rlt_online_collection_enabled = True
+    server._rlt_online_training_enabled = True
+    server._rlt_training_head = "idle"
+    server._rlt_actor_disabled_by_safety = False
+    server._rlt_demo_replay_size = 0
+    server._rlt_online_replay_size = 0
+    server._rlt_accepted_transitions = 0
+    server._rlt_accepted_frames = 0
+    server._rlt_episode_id_offset = 0
+    server.logger = logging.getLogger("test_policy_server_drtc")
+
+    assert server._load_rlt_replay_file(str(demo_path), source="demo") == 8
+    assert server._load_rlt_replay_file(str(online_path), source="online") == 6
+
+    training_offsets = [float(sample.rl_token[0].item() - 1.0) for sample in server._rlt_replay.samples()]
+    demo_offsets = [offset for offset in training_offsets if offset < 100]
+    online_offsets = [offset for offset in training_offsets if offset >= 100]
+
+    assert len(server._rlt_replay) == 8
+    assert len(server._rlt_demo_replay_samples) == 8
+    assert len(server._rlt_online_replay) == 6
+    assert len(demo_offsets) == 2
+    assert online_offsets == [102.0, 103.0, 104.0, 105.0, 106.0, 107.0]
+
+
+@require_package("grpcio", "grpc")
 def test_load_rlt_review_archive_preserves_existing_samples(tmp_path, monkeypatch):
     from lerobot.async_inference import policy_server_drtc
 
