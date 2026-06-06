@@ -1413,7 +1413,7 @@
                     <span class="rlt-metric-value" id="rlt-delta-rms">--</span>
                 </div>
                 <div class="rlt-metric">
-                    <span class="rlt-metric-label">BC Beta</span>
+                    <span class="rlt-metric-label">Current BC Beta</span>
                     <span class="rlt-metric-value" id="rlt-bc-beta">--</span>
                 </div>
                 <div class="rlt-metric">
@@ -3313,7 +3313,7 @@
             if (apply) apply.disabled = !connected;
             if (!connected) {
                 setText('rlt-tuning-status', 'Disconnected.');
-            } else if (!pickMetric(['rlt_bc_beta', 'bc_beta'])) {
+            } else if (pickMetric(['rlt_bc_beta', 'rlt_effective_bc_beta', 'bc_beta']) === null) {
                 setText('rlt-tuning-status', 'Connected. Waiting for RLT config...');
             }
         }
@@ -3642,7 +3642,10 @@
             const gateReason = pickMetric(['rlt_actor_gate_reason']);
             const actorExecuting = pickMetric(['rlt_actor_executing']);
             const deltaRms = pickMetric(['rlt_action_deviation_rms']);
-            const bcBeta = pickMetric(['rlt_bc_beta', 'bc_beta']);
+            const configuredBcBeta = pickMetric(['rlt_bc_beta']);
+            const currentBcBeta = pickMetric(['rlt_effective_bc_beta', 'bc_beta', 'rlt_bc_beta']);
+            const bcBetaFloor = pickMetric(['rlt_bc_beta_min']);
+            const bcBetaDecaySteps = pickMetric(['rlt_bc_beta_decay_steps']);
             const bcToQRatio = pickMetric(['rlt_actor_bc_to_q_ratio', 'actor_bc_to_q_ratio']);
             updateRltOutputBanners();
 
@@ -3661,13 +3664,22 @@
             setText('rlt-gate', humanizeStatus(gateReason));
             setText('rlt-active', actorExecuting === null ? '--' : (boolValue(actorExecuting) ? 'yes' : 'no'));
             setText('rlt-delta-rms', formatValue(deltaRms));
-            setText('rlt-bc-beta', formatValue(bcBeta));
+            setText('rlt-bc-beta', formatValue(currentBcBeta));
             setText('rlt-bc-q-ratio', formatValue(bcToQRatio));
-            if (bcBeta !== null) {
-                syncBetaControls(bcBeta);
+            const betaForControls = configuredBcBeta ?? currentBcBeta;
+            if (betaForControls !== null) {
+                syncBetaControls(betaForControls);
             }
-            if (data.event === 'rlt_hparam_override' && bcBeta !== null) {
-                setText('rlt-tuning-status', `Applied BC beta ${formatValue(bcBeta)}.`);
+            if (data.event === 'rlt_hparam_override' && configuredBcBeta !== null) {
+                setText('rlt-tuning-status', `Applied BC beta ${formatValue(configuredBcBeta)}.`);
+            } else if (!rltBetaInputDirty && currentBcBeta !== null) {
+                const scheduleText = bcBetaDecaySteps === null
+                    ? ''
+                    : ` | decay ${formatCount(bcBetaDecaySteps)} | floor ${formatValue(bcBetaFloor)}`;
+                setText(
+                    'rlt-tuning-status',
+                    `Configured ${formatValue(configuredBcBeta ?? currentBcBeta)} | current ${formatValue(currentBcBeta)}${scheduleText}`
+                );
             }
             setText(
                 'rlt-meta',
