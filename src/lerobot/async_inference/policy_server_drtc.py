@@ -22,13 +22,14 @@ python -m lerobot.async_inference.policy_server_drtc \
 import hashlib
 import json
 import logging
+import math
 import os
 import pickle  # nosec
 import queue
 import signal
 import threading
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from concurrent import futures
 from contextlib import suppress
 from dataclasses import dataclass
@@ -80,6 +81,7 @@ from .utils.viz_utils import compute_prefix_weights_for_viz
 
 _INITIAL_K = -(2**63)
 _RLT_SUCCESS_REWARD_BOOST = 2.0
+_RLT_SUCCESS_MOVING_AVG_WINDOW = 20
 
 
 def _safe_wandb_artifact_name(name: str) -> str:
@@ -360,6 +362,9 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
         self._rlt_discount = 0.99
         self._rlt_target_update_tau = 0.005
         self._rlt_execute_after_train_steps = 1000000
+        self._rlt_bc_beta_initial = 1.0
+        self._rlt_bc_beta_decay_steps = 0.0
+        self._rlt_bc_beta_min = 0.01
         self._rlt_eval_actor_blend = 1.0
         self._rlt_resume_head_checkpoint = False
         self._rlt_grad_clip_norm: float | None = None
@@ -374,7 +379,7 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
         self._rlt_wandb_run_name: str | None = None
         self._rlt_wandb_mode: str | None = None
         self._rlt_wandb_run: Any | None = None
-        self._rlt_wandb_log_queue: queue.Queue[tuple[int, dict[str, int | float]] | None] | None = None
+        self._rlt_wandb_log_queue: queue.Queue[tuple[int, dict[str, int | float | str]] | None] | None = None
         self._rlt_wandb_log_thread: threading.Thread | None = None
         self._rlt_wandb_log_stop = threading.Event()
         self._rlt_wandb_dropped_logs = 0
@@ -393,6 +398,16 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
         self._rlt_online_replay = RLTReplayBuffer(capacity=10000)
         self._rlt_episode_id_offset = 0
         self._rlt_completed_episodes: set[int] = set()
+        self._rlt_recent_episode_successes: deque[float] = deque(
+            maxlen=_RLT_SUCCESS_MOVING_AVG_WINDOW
+        )
+        self._rlt_episode_success_count = 0
+        self._rlt_episode_failure_count = 0
+        self._rlt_episode_open_count = 0
+        self._rlt_last_raw_outcome = "open"
+        self._rlt_last_raw_outcome_success = 0.0
+        self._rlt_last_raw_outcome_failure = 0.0
+        self._rlt_last_raw_outcome_open = 0.0
         self._rlt_context_cache = RLTSourceContextCache(max_size=256)
         self._rlt_replay = RLTReplayBuffer(capacity=10000)
         self._rlt_replay_lock = threading.Lock()
@@ -584,6 +599,9 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             "rlt_actor_critical_phase_active": getattr(self, "_rlt_actor_critical_phase_active", False),
             "rlt_eval_actor_blend": getattr(self, "_rlt_eval_actor_blend", 1.0),
             "rlt_bc_beta": getattr(cfg, "rlt_bc_beta", None) if cfg is not None else None,
+            "rlt_effective_bc_beta": self._rlt_effective_bc_beta(),
+            "rlt_bc_beta_decay_steps": getattr(self, "_rlt_bc_beta_decay_steps", 0.0),
+            "rlt_bc_beta_min": getattr(self, "_rlt_bc_beta_min", 0.01),
             "rlt_bc_reduction": getattr(cfg, "rlt_bc_reduction", None) if cfg is not None else None,
             "rlt_jerk_beta": getattr(cfg, "rlt_jerk_beta", None) if cfg is not None else None,
             "rlt_action_std": getattr(cfg, "rlt_action_std", None) if cfg is not None else None,
@@ -1188,10 +1206,12 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             self.logger.warning("RLT WandB finish failed during %s: %s", reason, e)
 
     @staticmethod
-    def _wandb_metric_value(value: Any) -> int | float | None:
+    def _wandb_metric_value(value: Any) -> int | float | str | None:
         if isinstance(value, bool):
             return int(value)
         if isinstance(value, int | float):
+            return value
+        if isinstance(value, str):
             return value
         if isinstance(value, torch.Tensor) and value.numel() == 1:
             return float(value.detach().cpu())
@@ -1202,7 +1222,7 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
         if run is None:
             return
 
-        payload: dict[str, int | float] = {}
+        payload: dict[str, int | float | str] = {}
         for key, value in metrics.items():
             metric_value = self._wandb_metric_value(value)
             if metric_value is None:
@@ -1565,6 +1585,9 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
         self._rlt_critic_lr = float(getattr(policy_specs, "rlt_critic_lr", 3e-4))
         self._rlt_discount = float(getattr(policy_specs, "rlt_discount", 0.99))
         self._rlt_target_update_tau = float(getattr(policy_specs, "rlt_target_update_tau", 0.005))
+        self._rlt_bc_beta_initial = float(getattr(policy_specs, "rlt_bc_beta", 1.0))
+        self._rlt_bc_beta_decay_steps = float(getattr(policy_specs, "rlt_bc_beta_decay_steps", 0.0) or 0.0)
+        self._rlt_bc_beta_min = float(getattr(policy_specs, "rlt_bc_beta_min", 0.01) or 0.0)
         self._rlt_execute_after_train_steps = int(
             getattr(policy_specs, "rlt_execute_after_train_steps", 1000000)
         )
@@ -1604,6 +1627,14 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
         self._rlt_accepted_transitions = 0
         self._rlt_accepted_frames = 0
         self._rlt_completed_episodes.clear()
+        self._rlt_recent_episode_successes = deque(maxlen=_RLT_SUCCESS_MOVING_AVG_WINDOW)
+        self._rlt_episode_success_count = 0
+        self._rlt_episode_failure_count = 0
+        self._rlt_episode_open_count = 0
+        self._rlt_last_raw_outcome = "open"
+        self._rlt_last_raw_outcome_success = 0.0
+        self._rlt_last_raw_outcome_failure = 0.0
+        self._rlt_last_raw_outcome_open = 0.0
         self._rlt_next_context_id = 1
         self._rlt_loaded_head_step = int(getattr(self.policy, "_rlt_loaded_head_step", 0) or 0)
         self._rlt_train_step = self._rlt_loaded_head_step
@@ -2118,6 +2149,7 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             self._rlt_online_replay.add(sample)
             replay_size = self._rebuild_rlt_training_replay_locked()
             online_replay_size = len(self._rlt_online_replay)
+            self._record_rlt_transition_outcome(transition)
         if self._rlt_review_archive_path:
             self._rlt_review_archive.append(sample)
             self._rlt_review_archive_dirty = True
@@ -2167,6 +2199,139 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             key: float(value.detach().cpu())
             for key, value in stats.items()
             if isinstance(value, torch.Tensor) and value.numel() == 1
+        }
+
+    def _rlt_effective_bc_beta(self, train_step: int | None = None) -> float:
+        policy = getattr(self, "policy", None)
+        cfg = getattr(policy, "config", None)
+        initial_default = float(getattr(self, "_rlt_bc_beta_initial", 1.0) or 0.0)
+        configured_beta = float(getattr(cfg, "rlt_bc_beta", initial_default) or 0.0)
+        decay_steps = float(getattr(self, "_rlt_bc_beta_decay_steps", 0.0) or 0.0)
+        if decay_steps <= 0.0:
+            return configured_beta
+
+        beta_floor = max(0.0, float(getattr(self, "_rlt_bc_beta_min", 0.01) or 0.0))
+        initial_beta = max(beta_floor, float(getattr(self, "_rlt_bc_beta_initial", configured_beta)))
+        step = max(0, int(self._rlt_train_step if train_step is None else train_step))
+        return beta_floor + (initial_beta - beta_floor) * math.exp(-float(step) / decay_steps)
+
+    @staticmethod
+    def _rlt_sample_outcome(sample: RLTReplaySample) -> str:
+        if bool(sample.success) or float(sample.reward) > 0.0:
+            return "success"
+        if bool(sample.failure):
+            return "failure"
+        return "open"
+
+    @classmethod
+    def _rlt_episode_outcome(cls, samples: list[RLTReplaySample]) -> str:
+        if any(cls._rlt_sample_outcome(sample) == "success" for sample in samples):
+            return "success"
+        if any(cls._rlt_sample_outcome(sample) == "failure" for sample in samples):
+            return "failure"
+        return "open"
+
+    def _rlt_replay_outcome_stats_locked(self) -> dict[str, float]:
+        self._ensure_rlt_replay_components()
+        samples = self._rlt_replay.samples()
+        sample_count = len(samples)
+        sample_counts = {"success": 0, "failure": 0, "open": 0}
+        episode_samples: dict[int, list[RLTReplaySample]] = {}
+        for sample in samples:
+            outcome = self._rlt_sample_outcome(sample)
+            sample_counts[outcome] += 1
+            if sample.episode_id is not None:
+                episode_samples.setdefault(int(sample.episode_id), []).append(sample)
+
+        episode_counts = {"success": 0, "failure": 0, "open": 0}
+        for episode in episode_samples.values():
+            episode_counts[self._rlt_episode_outcome(episode)] += 1
+
+        episode_count = len(episode_samples)
+        stats: dict[str, float] = {
+            "rlt_replay_sample_success_count": float(sample_counts["success"]),
+            "rlt_replay_sample_failure_count": float(sample_counts["failure"]),
+            "rlt_replay_sample_open_count": float(sample_counts["open"]),
+            "rlt_replay_episode_success_count": float(episode_counts["success"]),
+            "rlt_replay_episode_failure_count": float(episode_counts["failure"]),
+            "rlt_replay_episode_open_count": float(episode_counts["open"]),
+        }
+        if sample_count > 0:
+            stats.update(
+                {
+                    "rlt_replay_sample_success_fraction": sample_counts["success"] / sample_count,
+                    "rlt_replay_sample_failure_fraction": sample_counts["failure"] / sample_count,
+                    "rlt_replay_sample_open_fraction": sample_counts["open"] / sample_count,
+                }
+            )
+        else:
+            stats.update(
+                {
+                    "rlt_replay_sample_success_fraction": 0.0,
+                    "rlt_replay_sample_failure_fraction": 0.0,
+                    "rlt_replay_sample_open_fraction": 0.0,
+                }
+            )
+        if episode_count > 0:
+            stats.update(
+                {
+                    "rlt_replay_episode_success_fraction": episode_counts["success"] / episode_count,
+                    "rlt_replay_episode_failure_fraction": episode_counts["failure"] / episode_count,
+                    "rlt_replay_episode_open_fraction": episode_counts["open"] / episode_count,
+                }
+            )
+        else:
+            stats.update(
+                {
+                    "rlt_replay_episode_success_fraction": 0.0,
+                    "rlt_replay_episode_failure_fraction": 0.0,
+                    "rlt_replay_episode_open_fraction": 0.0,
+                }
+            )
+        return stats
+
+    def _record_rlt_transition_outcome(self, transition: services_pb2.RLTTransitionChunk) -> None:
+        success = bool(transition.success) or float(transition.reward) > 0.0
+        failure = bool(transition.failure) and not success
+        open_outcome = not success and not failure
+        outcome = "success" if success else "failure" if failure else "open"
+
+        self._rlt_last_raw_outcome = outcome
+        self._rlt_last_raw_outcome_success = 1.0 if success else 0.0
+        self._rlt_last_raw_outcome_failure = 1.0 if failure else 0.0
+        self._rlt_last_raw_outcome_open = 1.0 if open_outcome else 0.0
+
+        if not bool(transition.done):
+            return
+        if success:
+            self._rlt_episode_success_count += 1
+            self._rlt_recent_episode_successes.append(1.0)
+        elif failure:
+            self._rlt_episode_failure_count += 1
+            self._rlt_recent_episode_successes.append(0.0)
+        else:
+            self._rlt_episode_open_count += 1
+            self._rlt_recent_episode_successes.append(0.0)
+
+    def _rlt_outcome_wandb_stats(self) -> dict[str, int | float | str]:
+        recent = list(getattr(self, "_rlt_recent_episode_successes", []))
+        recent_count = len(recent)
+        total_episodes = (
+            int(getattr(self, "_rlt_episode_success_count", 0))
+            + int(getattr(self, "_rlt_episode_failure_count", 0))
+            + int(getattr(self, "_rlt_episode_open_count", 0))
+        )
+        return {
+            "rlt_raw_outcome": str(getattr(self, "_rlt_last_raw_outcome", "open") or "open"),
+            "rlt_raw_outcome_success": float(getattr(self, "_rlt_last_raw_outcome_success", 0.0)),
+            "rlt_raw_outcome_failure": float(getattr(self, "_rlt_last_raw_outcome_failure", 0.0)),
+            "rlt_raw_outcome_open": float(getattr(self, "_rlt_last_raw_outcome_open", 0.0)),
+            "rlt_episode_success_count": float(getattr(self, "_rlt_episode_success_count", 0)),
+            "rlt_episode_failure_count": float(getattr(self, "_rlt_episode_failure_count", 0)),
+            "rlt_episode_open_count": float(getattr(self, "_rlt_episode_open_count", 0)),
+            "rlt_episode_count": float(total_episodes),
+            "rlt_success_moving_avg": float(sum(recent) / recent_count) if recent_count else 0.0,
+            "rlt_success_moving_avg_count": float(recent_count),
         }
 
     def _check_rlt_safety(self, stats: dict[str, float]) -> None:
@@ -2251,6 +2416,8 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
                 continue
             with self._rlt_replay_lock:
                 replay_size = len(self._rlt_replay)
+                replay_outcome_stats = self._rlt_replay_outcome_stats_locked()
+                outcome_wandb_stats = self._rlt_outcome_wandb_stats()
             if replay_size < max(self._rlt_batch_size, self._rlt_warmup_transitions):
                 self._set_rlt_training_head("warmup_replay")
                 time.sleep(self._rlt_train_freq_s)
@@ -2301,7 +2468,13 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
                             continue
 
                         self._set_rlt_training_head("actor")
-                        actor_loss, actor_stats = rlt_actor_loss(self.policy, batch, return_stats=True)
+                        effective_bc_beta = self._rlt_effective_bc_beta(self._rlt_train_step)
+                        actor_loss, actor_stats = rlt_actor_loss(
+                            self.policy,
+                            batch,
+                            beta=effective_bc_beta,
+                            return_stats=True,
+                        )
                         self._rlt_actor_optimizer.zero_grad(set_to_none=True)
                         actor_loss.backward()
                         actor_grad_norm = self._clip_rlt_grad_norm(self.policy.rlt_actor.parameters())
@@ -2309,18 +2482,29 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
                         soft_update_rlt_target(self.policy, self._rlt_target_update_tau)
                         self.policy.eval()
                         self._rlt_train_step += 1
+                        batch_success = batch["success"].float()
+                        batch_failure = batch["failure"].float()
+                        batch_open = ((batch_success <= 0.5) & (batch_failure <= 0.5)).float()
                         rlt_stats = {
                             **self._rlt_float_stats(critic_stats),
                             **self._rlt_float_stats(actor_stats),
+                            **replay_outcome_stats,
+                            **outcome_wandb_stats,
                             "rlt_critic_grad_norm": critic_grad_norm,
                             "rlt_actor_grad_norm": actor_grad_norm,
                             "rlt_replay_size": float(replay_size),
-                            "rlt_batch_success_fraction": float(
-                                batch["success"].float().mean().detach().cpu()
-                            ),
+                            "rlt_batch_success_fraction": float(batch_success.mean().detach().cpu()),
+                            "rlt_batch_failure_fraction": float(batch_failure.mean().detach().cpu()),
+                            "rlt_batch_open_fraction": float(batch_open.mean().detach().cpu()),
                             "rlt_batch_intervention_fraction": float(
                                 batch["is_intervention"].float().mean().detach().cpu()
                             ),
+                            "rlt_effective_bc_beta": float(effective_bc_beta),
+                            "rlt_bc_beta_initial": float(getattr(self, "_rlt_bc_beta_initial", 0.0)),
+                            "rlt_bc_beta_decay_steps": float(
+                                getattr(self, "_rlt_bc_beta_decay_steps", 0.0)
+                            ),
+                            "rlt_bc_beta_min": float(getattr(self, "_rlt_bc_beta_min", 0.01)),
                         }
                         self._check_rlt_safety(rlt_stats)
 
@@ -2360,6 +2544,9 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             "rlt_discount": self._rlt_discount,
             "rlt_target_update_tau": self._rlt_target_update_tau,
             "rlt_bc_beta": getattr(self.policy.config, "rlt_bc_beta", None),
+            "rlt_effective_bc_beta": self._rlt_effective_bc_beta(),
+            "rlt_bc_beta_decay_steps": self._rlt_bc_beta_decay_steps,
+            "rlt_bc_beta_min": self._rlt_bc_beta_min,
             "rlt_bc_reduction": getattr(self.policy.config, "rlt_bc_reduction", None),
             "rlt_jerk_beta": getattr(self.policy.config, "rlt_jerk_beta", None),
             "rlt_action_std": getattr(self.policy.config, "rlt_action_std", None),

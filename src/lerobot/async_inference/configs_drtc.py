@@ -316,6 +316,19 @@ class RobotClientDrtcConfig:
         default=1.0,
         metadata={"help": "BC/reference-action regularization coefficient for RLT training."},
     )
+    rlt_bc_beta_decay_steps: float = field(
+        default=0.0,
+        metadata={
+            "help": (
+                "RLT BC beta exponential decay time constant in train steps. "
+                "Set <=0 to disable automatic beta decay."
+            )
+        },
+    )
+    rlt_bc_beta_min: float = field(
+        default=0.01,
+        metadata={"help": "Minimum BC beta floor used by automatic RLT BC beta decay."},
+    )
     rlt_bc_reduction: str = field(
         default="sum",
         metadata={"help": "BC penalty reduction: 'sum' matches TheWisp/HVLA; 'mean' preserves legacy scaling."},
@@ -858,6 +871,13 @@ class RobotClientDrtcConfig:
             )
         if self.rlt_bc_beta < 0:
             raise ValueError(f"rlt_bc_beta must be non-negative, got {self.rlt_bc_beta}")
+        if self.rlt_bc_beta_decay_steps < 0:
+            raise ValueError(
+                "rlt_bc_beta_decay_steps must be non-negative, "
+                f"got {self.rlt_bc_beta_decay_steps}"
+            )
+        if self.rlt_bc_beta_min < 0:
+            raise ValueError(f"rlt_bc_beta_min must be non-negative, got {self.rlt_bc_beta_min}")
         if self.rlt_bc_reduction not in ("sum", "mean"):
             raise ValueError(
                 f"rlt_bc_reduction must be 'sum' or 'mean', got {self.rlt_bc_reduction!r}"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
 from types import SimpleNamespace
 
@@ -343,6 +344,14 @@ def _server_for_accept_transition(policy_server_drtc):
     server._rlt_demo_replay_size = 0
     server._rlt_accepted_transitions = 0
     server._rlt_accepted_frames = 0
+    server._rlt_recent_episode_successes = policy_server_drtc.deque(maxlen=20)
+    server._rlt_episode_success_count = 0
+    server._rlt_episode_failure_count = 0
+    server._rlt_episode_open_count = 0
+    server._rlt_last_raw_outcome = "open"
+    server._rlt_last_raw_outcome_success = 0.0
+    server._rlt_last_raw_outcome_failure = 0.0
+    server._rlt_last_raw_outcome_open = 0.0
     server._rlt_online_replay_size = 0
     server._rlt_online_buffer_save_freq_transitions = 0
     server._rlt_buffer_dirty = False
@@ -353,6 +362,99 @@ def _server_for_accept_transition(policy_server_drtc):
     server._action_normalizer = None
     server._metrics = SimpleNamespace(diagnostic=_DiagnosticStub())
     return server
+
+
+@require_package("grpcio", "grpc")
+def test_rlt_effective_bc_beta_uses_exponential_decay_with_floor():
+    from lerobot.async_inference import policy_server_drtc
+
+    server = policy_server_drtc.PolicyServerDrtc.__new__(policy_server_drtc.PolicyServerDrtc)
+    server.policy = SimpleNamespace(config=SimpleNamespace(rlt_bc_beta=0.95))
+    server._rlt_train_step = 0
+    server._rlt_bc_beta_initial = 0.95
+    server._rlt_bc_beta_decay_steps = 600.0
+    server._rlt_bc_beta_min = 0.01
+
+    assert math.isclose(server._rlt_effective_bc_beta(0), 0.95)
+    assert math.isclose(
+        server._rlt_effective_bc_beta(600),
+        0.01 + (0.95 - 0.01) * math.exp(-1.0),
+    )
+    assert server._rlt_effective_bc_beta(100_000) >= 0.01
+    assert math.isclose(server._rlt_effective_bc_beta(100_000), 0.01, rel_tol=0.0, abs_tol=1e-6)
+
+
+@require_package("grpcio", "grpc")
+def test_rlt_replay_outcome_stats_count_success_failure_and_open():
+    from lerobot.async_inference import policy_server_drtc
+
+    server = policy_server_drtc.PolicyServerDrtc.__new__(policy_server_drtc.PolicyServerDrtc)
+    server._rlt_replay_capacity = 8
+    server._rlt_replay = RLTReplayBuffer(capacity=8)
+
+    success = _sample(0.0)
+    success.episode_id = 1
+    success.success = True
+    success.reward = 1.0
+    failure = _sample(1.0)
+    failure.episode_id = 2
+    failure.success = False
+    failure.failure = True
+    failure.reward = 0.0
+    open_sample = _sample(2.0)
+    open_sample.episode_id = 3
+    open_sample.success = False
+    open_sample.failure = False
+    open_sample.reward = 0.0
+    server._rlt_replay.extend([success, failure, open_sample])
+
+    stats = server._rlt_replay_outcome_stats_locked()
+
+    assert stats["rlt_replay_sample_success_count"] == 1.0
+    assert stats["rlt_replay_sample_failure_count"] == 1.0
+    assert stats["rlt_replay_sample_open_count"] == 1.0
+    assert math.isclose(stats["rlt_replay_sample_success_fraction"], 1 / 3)
+    assert stats["rlt_replay_episode_success_count"] == 1.0
+    assert stats["rlt_replay_episode_failure_count"] == 1.0
+    assert stats["rlt_replay_episode_open_count"] == 1.0
+
+
+@require_package("grpcio", "grpc")
+def test_rlt_outcome_wandb_stats_track_raw_and_moving_success():
+    from lerobot.async_inference import policy_server_drtc
+
+    server = policy_server_drtc.PolicyServerDrtc.__new__(policy_server_drtc.PolicyServerDrtc)
+    server._rlt_recent_episode_successes = policy_server_drtc.deque(maxlen=3)
+    server._rlt_episode_success_count = 0
+    server._rlt_episode_failure_count = 0
+    server._rlt_episode_open_count = 0
+    server._rlt_last_raw_outcome = "open"
+    server._rlt_last_raw_outcome_success = 0.0
+    server._rlt_last_raw_outcome_failure = 0.0
+    server._rlt_last_raw_outcome_open = 0.0
+
+    server._record_rlt_transition_outcome(
+        SimpleNamespace(success=True, failure=False, reward=1.0, done=True)
+    )
+    server._record_rlt_transition_outcome(
+        SimpleNamespace(success=False, failure=True, reward=0.0, done=True)
+    )
+    server._record_rlt_transition_outcome(
+        SimpleNamespace(success=False, failure=False, reward=0.0, done=True)
+    )
+
+    stats = server._rlt_outcome_wandb_stats()
+
+    assert stats["rlt_raw_outcome"] == "open"
+    assert stats["rlt_raw_outcome_success"] == 0.0
+    assert stats["rlt_raw_outcome_failure"] == 0.0
+    assert stats["rlt_raw_outcome_open"] == 1.0
+    assert stats["rlt_episode_success_count"] == 1.0
+    assert stats["rlt_episode_failure_count"] == 1.0
+    assert stats["rlt_episode_open_count"] == 1.0
+    assert stats["rlt_episode_count"] == 3.0
+    assert math.isclose(stats["rlt_success_moving_avg"], 1 / 3)
+    assert stats["rlt_success_moving_avg_count"] == 3.0
 
 
 @require_package("grpcio", "grpc")

@@ -442,6 +442,8 @@ class RobotClientDrtc:
             rlt_q_target_clip=config.rlt_q_target_clip,
             rlt_abort_reward=config.rlt_abort_reward,
             rlt_bc_beta=config.rlt_bc_beta,
+            rlt_bc_beta_decay_steps=config.rlt_bc_beta_decay_steps,
+            rlt_bc_beta_min=config.rlt_bc_beta_min,
             rlt_bc_reduction=config.rlt_bc_reduction,
             rlt_bc_action_weights=config.rlt_bc_action_weights,
             rlt_jerk_beta=config.rlt_jerk_beta,

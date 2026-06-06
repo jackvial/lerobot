@@ -173,6 +173,8 @@ class ExperimentConfig:
     rlt_q_target_clip: bool = True
     rlt_abort_reward: float = -1.0
     rlt_bc_beta: float = 1.0
+    rlt_bc_beta_decay_steps: float = 0.0
+    rlt_bc_beta_min: float = 0.01
     rlt_bc_reduction: str = "sum"
     rlt_bc_action_weights: list[float] | None = None
     rlt_jerk_beta: float = 0.0
@@ -307,7 +309,8 @@ _SCALAR_FIELDS = frozenset({
     "rlt_actor_mode", "rlt_action_std", "rlt_shared_noise_per_chunk",
     "rlt_target_sigma", "rlt_target_noise_clip", "rlt_num_critics",
     "rlt_critic_layer_norm", "rlt_q_target_clip", "rlt_abort_reward",
-    "rlt_bc_beta", "rlt_bc_reduction", "rlt_bc_action_weights",
+    "rlt_bc_beta", "rlt_bc_beta_decay_steps", "rlt_bc_beta_min",
+    "rlt_bc_reduction", "rlt_bc_action_weights",
     "rlt_jerk_beta", "rlt_reference_dropout_p",
     "rlt_intervention_reference_mode",
     "rlt_online_collection_enabled", "rlt_online_training_enabled",
@@ -588,6 +591,8 @@ def create_client_config(
         rlt_q_target_clip=config.rlt_q_target_clip,
         rlt_abort_reward=config.rlt_abort_reward,
         rlt_bc_beta=config.rlt_bc_beta,
+        rlt_bc_beta_decay_steps=config.rlt_bc_beta_decay_steps,
+        rlt_bc_beta_min=config.rlt_bc_beta_min,
         rlt_bc_reduction=config.rlt_bc_reduction,
         rlt_bc_action_weights=config.rlt_bc_action_weights,
         rlt_jerk_beta=config.rlt_jerk_beta,

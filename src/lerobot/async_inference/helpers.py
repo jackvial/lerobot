@@ -486,6 +486,8 @@ class RemotePolicyConfig:
     rlt_q_target_clip: bool = True
     rlt_abort_reward: float = -1.0
     rlt_bc_beta: float = 1.0
+    rlt_bc_beta_decay_steps: float = 0.0
+    rlt_bc_beta_min: float = 0.01
     rlt_bc_reduction: str = "sum"
     rlt_bc_action_weights: list[float] | None = None
     rlt_jerk_beta: float = 0.0
@@ -572,6 +574,8 @@ class RemotePolicyConfig:
         self.__dict__.setdefault("rlt_q_target_clip", True)
         self.__dict__.setdefault("rlt_abort_reward", -1.0)
         self.__dict__.setdefault("rlt_bc_beta", 1.0)
+        self.__dict__.setdefault("rlt_bc_beta_decay_steps", 0.0)
+        self.__dict__.setdefault("rlt_bc_beta_min", 0.01)
         self.__dict__.setdefault("rlt_bc_reduction", "sum")
         self.__dict__.setdefault("rlt_bc_action_weights", None)
         self.__dict__.setdefault("rlt_jerk_beta", 0.0)
