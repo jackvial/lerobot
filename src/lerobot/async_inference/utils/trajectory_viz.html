@@ -3243,6 +3243,57 @@
             return row;
         }
 
+        function criticalIdFromStatus(data, eventName) {
+            const clientEpisodeId = numericOrNull(data.client_episode_id);
+            if (data.source === 'policy_server' && clientEpisodeId !== null) {
+                return clientEpisodeId;
+            }
+            if (eventName === 'rlt_transition_accepted' && clientEpisodeId !== null) {
+                return clientEpisodeId;
+            }
+            return numericOrNull(data.critical_phase_id ?? data.episode_id);
+        }
+
+        function isOpenCriticalPlaceholder(row) {
+            if (!row || row.kind !== 'critical') return false;
+            const transitions = numericOrNull(row.transitions ?? row.queuedTransitions);
+            return (
+                (row.status || 'open') === 'open' &&
+                (row.label || 'open') === 'open' &&
+                (transitions === null || transitions === 0) &&
+                row.criticalStartS === undefined &&
+                row.criticalEndS === undefined
+            );
+        }
+
+        function isSyntheticRolloutCriticalDuplicate(row) {
+            if (!isOpenCriticalPlaceholder(row)) return false;
+            const rolloutRow = rolloutState.rows.get(`rollout:${row.rolloutId}`);
+            if (!rolloutRow) return false;
+            const rolloutStatus = String(rolloutRow.status || '');
+            if (
+                rolloutStatus === 'pending label' ||
+                rolloutStatus === 'labeled' ||
+                rolloutStatus === 'discarded' ||
+                rolloutStatus === 'boosted'
+            ) {
+                return true;
+            }
+            const rolloutCriticalId = numericOrNull(rolloutRow.criticalPhaseId);
+            const rowCriticalId = numericOrNull(row.criticalPhaseId);
+            if (
+                rolloutCriticalId !== null &&
+                rowCriticalId !== null &&
+                rolloutCriticalId !== rowCriticalId
+            ) {
+                return false;
+            }
+            return (
+                !row.sawRltExecution &&
+                !row.sawVlaExecution
+            );
+        }
+
         function updateServerEpisodeMapping(data) {
             const clientEpisodeId = numericOrNull(data.client_episode_id);
             const serverEpisodeId = numericOrNull(data.episode_id);
@@ -3293,11 +3344,27 @@
             if (eventName === 'rlt_rollout_ended' && rolloutId !== null) {
                 const rolloutEndTs = numericOrNull(data.rollout_end_ts) ?? numericOrNull(data.timestamp);
                 const rolloutDurationS = numericOrNull(data.rollout_duration_s);
+                const criticalPendingLabel = boolValue(data.critical_pending_label);
+                const endedCriticalId = criticalIdFromStatus(data, eventName);
                 const rolloutRow = rolloutState.rows.get(`rollout:${rolloutId}`);
                 if (rolloutRow) {
                     rolloutRow.rolloutEndTs = rolloutEndTs ?? rolloutRow.rolloutEndTs;
                     rolloutRow.rolloutDurationS = rolloutDurationS ?? rolloutRow.rolloutDurationS;
-                    rolloutRow.status = rolloutRow.label && rolloutRow.label !== 'open' ? rolloutRow.status : 'rollout ended';
+                    if (criticalPendingLabel) {
+                        rolloutRow.status = 'pending label';
+                        rolloutRow.label = rolloutRow.label || 'open';
+                        if (endedCriticalId !== null && endedCriticalId > 0) {
+                            rolloutRow.criticalPhaseId = endedCriticalId;
+                        }
+                        rolloutRow.criticalEndStep = numericOrNull(data.critical_end_step) ?? rolloutRow.criticalEndStep;
+                        rolloutRow.transitions = numericOrNull(
+                            data.current_critical_transitions ?? data.current_episode_transitions
+                        ) ?? rolloutRow.transitions;
+                    } else {
+                        rolloutRow.status = rolloutRow.label && rolloutRow.label !== 'open'
+                            ? rolloutRow.status
+                            : 'rollout ended';
+                    }
                     updateRolloutExecution(rolloutRow, data);
                 }
                 for (const row of rolloutState.rows.values()) {
@@ -3310,7 +3377,7 @@
                 return;
             }
 
-            const criticalId = numericOrNull(data.critical_phase_id ?? data.episode_id);
+            const criticalId = criticalIdFromStatus(data, eventName);
             const inferredFromRollout = boolValue(
                 data.critical_inferred_from_rollout ?? data.inferred_from_rollout
             );
@@ -3338,9 +3405,35 @@
                 return;
             }
 
-            const key = inferredFromRollout ? `rollout:${rolloutId}` : `critical:${rolloutId}:${criticalId}`;
+            const rolloutKey = `rollout:${rolloutId}`;
+            const criticalKey = `critical:${rolloutId}:${criticalId}`;
+            const rolloutRow = rolloutState.rows.get(rolloutKey);
+            const criticalRow = rolloutState.rows.get(criticalKey);
+            const isExplicitCriticalStart = eventName === 'rlt_critical_phase_started' && !inferredFromRollout;
+            const criticalMatchesRollout = (
+                rolloutRow &&
+                (
+                    rolloutRow.criticalPhaseId === undefined ||
+                    rolloutRow.criticalPhaseId === null ||
+                    Number(rolloutRow.criticalPhaseId) === criticalId
+                )
+            );
+            const criticalRowIsSyntheticDuplicate = isSyntheticRolloutCriticalDuplicate(criticalRow);
+            const useRolloutRow = (
+                inferredFromRollout ||
+                (
+                    (!criticalRow || criticalRowIsSyntheticDuplicate) &&
+                    criticalMatchesRollout &&
+                    !isExplicitCriticalStart
+                )
+            );
+            if (useRolloutRow && criticalRow && criticalKey !== rolloutKey) {
+                rolloutState.rows.delete(criticalKey);
+                rolloutState.order = rolloutState.order.filter(key => key !== criticalKey);
+            }
+            const key = useRolloutRow ? rolloutKey : criticalKey;
             const row = ensureRolloutRow(key, {
-                kind: inferredFromRollout ? 'rollout' : 'critical',
+                kind: useRolloutRow ? 'rollout' : 'critical',
                 rolloutId,
                 criticalPhaseId: criticalId,
                 rolloutStartTs: rolloutState.rolloutStarts.get(String(rolloutId)),
@@ -3349,7 +3442,7 @@
                 status: 'open',
             });
 
-            row.kind = inferredFromRollout ? 'rollout' : (row.kind || 'critical');
+            row.kind = useRolloutRow ? 'rollout' : (row.kind || 'critical');
             row.rolloutStartTs = numericOrNull(data.rollout_start_ts) ?? row.rolloutStartTs;
             row.rolloutStartStep = numericOrNull(data.rollout_start_step) ?? row.rolloutStartStep;
             row.criticalPhaseId = criticalId;
@@ -3407,8 +3500,11 @@
             const rows = rolloutState.order
                 .map(key => rolloutState.rows.get(key))
                 .filter(row => row && (
-                    row.kind === 'rollout' ||
-                    (row.criticalPhaseId !== undefined && row.criticalPhaseId !== null)
+                    !isSyntheticRolloutCriticalDuplicate(row) &&
+                    (
+                        row.kind === 'rollout' ||
+                        (row.criticalPhaseId !== undefined && row.criticalPhaseId !== null)
+                    )
                 ))
                 .slice(-MAX_ROLLOUT_ROWS)
                 .reverse();

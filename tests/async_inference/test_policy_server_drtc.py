@@ -635,7 +635,7 @@ def test_accept_rlt_transition_persists_policy_origin(monkeypatch):
         rlt_policy_mode="rlt_actor",
         rlt_actor_executing=True,
         rollout_id=5,
-        critical_phase_id=7,
+        critical_phase_id=6,
     )
     server._rlt_context_cache.put(source)
 
@@ -670,6 +670,7 @@ def test_accept_rlt_transition_persists_policy_origin(monkeypatch):
     assert accepted["rlt_actor_executing"] is True
     assert accepted["rollout_id"] == 5
     assert accepted["critical_phase_id"] == 7
+    assert accepted["client_episode_id"] == 7
 
 
 @require_package("grpcio", "grpc")

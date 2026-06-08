@@ -5,6 +5,7 @@ import numpy as np
 
 from lerobot.async_inference.helpers import TimedAction
 from lerobot.async_inference.robot_client_drtc import ReceivedActionChunk, RobotClientDrtc
+from lerobot.teleoperators.utils import TeleopEvents
 from lerobot.transport import services_pb2
 
 
@@ -304,6 +305,213 @@ def test_failure_without_critical_start_uses_rollout_as_failed_demo():
     assert client._rlt_critical_pending_label is False
     assert client._rlt_completed_episodes_count == 1
     assert client._rlt_failure_episodes_count == 1
+
+
+def test_end_rollout_preserves_vla_only_demo_for_later_label():
+    client, _diagnostic = _make_rlt_client()
+    client._rlt_episode_open = False
+    client._rlt_critical_pending_label = False
+    client._rlt_current_episode_transition_buffer = []
+    client._rlt_current_episode_transitions = 0
+    client._rlt_rollout_start_ts = 10.0
+    client._rlt_rollout_start_step = 100
+    client.action_step = 102
+    client._begin_new_inference_epoch = lambda reason: None
+
+    actions = [
+        TimedAction(action=np.asarray([float(i)], dtype=np.float32), action_step=100 + i)
+        for i in range(3)
+    ]
+    chunk = ReceivedActionChunk(
+        actions=actions,
+        src_control_step=10,
+        chunk_start_step=100,
+        measured_latency=0.0,
+        rlt_context_id=21,
+        policy_mode="vla_passthrough",
+        rlt_collectable=True,
+    )
+    client._rlt_note_collectable_chunk(chunk)
+    for step in range(100, 103):
+        client._rlt_record_executed_action(
+            step,
+            np.asarray([float(step)], dtype=np.float32),
+            is_intervention=False,
+        )
+
+    client._rlt_end_rollout(enable_intervention_for_reset=True)
+
+    assert client._rlt_rollout_open is False
+    assert client._rlt_critical_pending_label is True
+    assert client._rlt_critical_inferred_from_rollout is True
+    assert client._rlt_transition_queue.empty()
+    assert client._rlt_current_episode_transitions == 1
+    assert client._rlt_prebuffer_pending_chunks == {}
+    assert client._rlt_prebuffer_executed_actions == {}
+
+    client._rlt_label_current_critical_phase(success=True)
+
+    terminal = client._rlt_transition_queue.get_nowait()
+    assert terminal.done is True
+    assert terminal.success is True
+    assert terminal.failure is False
+    assert terminal.reward == 1.0
+    assert client._rlt_critical_start_ts == 10.0
+    assert client._rlt_critical_start_step == 100
+    assert client._rlt_critical_end_step == 102
+    assert client._rlt_critical_pending_label is False
+    assert client._rlt_completed_episodes_count == 1
+    assert client._rlt_success_episodes_count == 1
+
+
+def test_end_rollout_after_label_does_not_create_second_pending_vla_demo():
+    client, _diagnostic = _make_rlt_client()
+    client._rlt_episode_open = False
+    client._rlt_critical_pending_label = False
+    client._rlt_current_episode_transition_buffer = []
+    client._rlt_current_episode_transitions = 0
+    client._rlt_rollout_start_ts = 10.0
+    client._rlt_rollout_start_step = 100
+    client.action_step = 102
+    client._begin_new_inference_epoch = lambda reason: None
+
+    actions = [
+        TimedAction(action=np.asarray([float(i)], dtype=np.float32), action_step=100 + i)
+        for i in range(3)
+    ]
+    chunk = ReceivedActionChunk(
+        actions=actions,
+        src_control_step=10,
+        chunk_start_step=100,
+        measured_latency=0.0,
+        rlt_context_id=21,
+        policy_mode="vla_passthrough",
+        rlt_collectable=True,
+    )
+    client._rlt_note_collectable_chunk(chunk)
+    for step in range(100, 103):
+        client._rlt_record_executed_action(
+            step,
+            np.asarray([float(step)], dtype=np.float32),
+            is_intervention=False,
+        )
+    client._rlt_label_current_critical_phase(success=True)
+    assert client._rlt_transition_queue.qsize() == 1
+
+    tail_actions = [
+        TimedAction(action=np.asarray([float(i)], dtype=np.float32), action_step=103 + i)
+        for i in range(3)
+    ]
+    tail_chunk = ReceivedActionChunk(
+        actions=tail_actions,
+        src_control_step=11,
+        chunk_start_step=103,
+        measured_latency=0.0,
+        rlt_context_id=22,
+        policy_mode="vla_passthrough",
+        rlt_collectable=True,
+    )
+    client._rlt_note_collectable_chunk(tail_chunk)
+    for step in range(103, 106):
+        client._rlt_record_executed_action(
+            step,
+            np.asarray([float(step)], dtype=np.float32),
+            is_intervention=False,
+        )
+    client.action_step = 105
+
+    client._rlt_end_rollout(enable_intervention_for_reset=True)
+
+    assert client._rlt_rollout_open is False
+    assert client._rlt_critical_pending_label is False
+    assert client._rlt_transition_queue.qsize() == 1
+    assert client._rlt_completed_episodes_count == 1
+
+
+def test_start_rollout_discards_unlabeled_ended_vla_only_demo():
+    client, _diagnostic = _make_rlt_client()
+    client._rlt_episode_open = False
+    client._rlt_critical_pending_label = False
+    client._rlt_current_episode_transition_buffer = []
+    client._rlt_current_episode_transitions = 0
+    client._rlt_rollout_start_ts = 10.0
+    client._rlt_rollout_start_step = 100
+    client.action_step = 102
+    client._begin_new_inference_epoch = lambda reason: None
+
+    actions = [
+        TimedAction(action=np.asarray([float(i)], dtype=np.float32), action_step=100 + i)
+        for i in range(3)
+    ]
+    chunk = ReceivedActionChunk(
+        actions=actions,
+        src_control_step=10,
+        chunk_start_step=100,
+        measured_latency=0.0,
+        rlt_context_id=21,
+        policy_mode="vla_passthrough",
+        rlt_collectable=True,
+    )
+    client._rlt_note_collectable_chunk(chunk)
+    for step in range(100, 103):
+        client._rlt_record_executed_action(
+            step,
+            np.asarray([float(step)], dtype=np.float32),
+            is_intervention=False,
+        )
+
+    client._rlt_end_rollout(enable_intervention_for_reset=True)
+    assert client._rlt_critical_pending_label is True
+    assert client._rlt_current_episode_transitions == 1
+
+    old_rollout_id = client._rlt_rollout_id
+    old_episode_id = client._rlt_episode_id
+    client._rlt_start_rollout()
+
+    assert client._rlt_rollout_id == old_rollout_id + 1
+    assert client._rlt_rollout_open is True
+    assert client._rlt_critical_pending_label is False
+    assert client._rlt_current_episode_transition_buffer == []
+    assert client._rlt_current_episode_transitions == 0
+    assert client._rlt_discarded_episodes_count == 1
+    assert client._rlt_completed_episodes_count == 0
+    assert client._rlt_transition_queue.empty()
+
+    client._rlt_handle_episode_events(
+        {
+            TeleopEvents.FAILURE: True,
+            TeleopEvents.FAILURE.value: True,
+            "_rlt_label_rollout_id": old_rollout_id,
+            "_rlt_label_critical_phase_id": old_episode_id,
+        }
+    )
+
+    assert client._rlt_completed_episodes_count == 0
+    assert client._rlt_failure_episodes_count == 0
+    assert client._rlt_transition_queue.empty()
+
+
+def test_control_file_label_events_preserve_rollout_targets():
+    client, _diagnostic = _make_rlt_client()
+    client._teleop_device = None
+    client.robot = SimpleNamespace()
+    client._tui_control_reader = SimpleNamespace(
+        read_events=lambda: [
+            {
+                "command": "failure",
+                "source": "browser_dashboard",
+                "rollout_id": 7,
+                "critical_phase_id": 3,
+            }
+        ]
+    )
+
+    events = client._poll_teleop_events()
+
+    assert events[TeleopEvents.FAILURE] is True
+    assert events[TeleopEvents.FAILURE.value] is True
+    assert events["_rlt_label_rollout_id"] == 7
+    assert events["_rlt_label_critical_phase_id"] == 3
 
 
 def test_discard_critical_phase_keeps_rollout_open():

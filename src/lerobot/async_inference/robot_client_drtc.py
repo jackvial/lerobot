@@ -794,15 +794,16 @@ class RobotClientDrtc:
 
     def _poll_teleop_events(self) -> dict[Any, Any]:
         """Poll teleop events once for a control tick."""
-        commands = self._tui_control_reader.read_commands()
-        fallback_commands: list[str] = []
+        control_events = self._tui_control_reader.read_events()
+        fallback_events: list[dict[str, Any]] = []
         key_handler = getattr(self._teleop_device, "_handle_key_char", None)
         key_chars = {
             # Intervention toggling still belongs to the teleop device because
             # SO leader needs to disable/enable torque on its bus.
             "toggle_intervention": "5",
         }
-        for command in commands:
+        for control_event in control_events:
+            command = str(control_event.get("command") or "")
             char = key_chars.get(command)
             if callable(key_handler) and char is not None:
                 try:
@@ -811,7 +812,7 @@ class RobotClientDrtc:
                 except Exception as e:
                     self.logger.error("TUI teleop command failed: %s", e)
             else:
-                fallback_commands.append(command)
+                fallback_events.append(control_event)
 
         events: dict[Any, Any] = {}
         if self._teleop_device is None:
@@ -822,7 +823,8 @@ class RobotClientDrtc:
             except Exception as e:
                 self.logger.error("Teleop event read failed: %s", e)
 
-        for command in fallback_commands:
+        for control_event in fallback_events:
+            command = str(control_event.get("command") or "")
             if command == "toggle_intervention":
                 self._tui_intervention_enabled = not self._tui_intervention_enabled
                 self._emit_rlt_status(
@@ -848,12 +850,20 @@ class RobotClientDrtc:
             elif command == "success":
                 events[TeleopEvents.SUCCESS] = True
                 events[TeleopEvents.SUCCESS.value] = True
+                if "rollout_id" in control_event:
+                    events["_rlt_label_rollout_id"] = control_event.get("rollout_id")
+                if "critical_phase_id" in control_event:
+                    events["_rlt_label_critical_phase_id"] = control_event.get("critical_phase_id")
                 self._emit_rlt_status("tui_control", command=command)
             elif command == "failure":
                 events[TeleopEvents.TERMINATE_EPISODE] = True
                 events[TeleopEvents.TERMINATE_EPISODE.value] = True
                 events[TeleopEvents.FAILURE] = True
                 events[TeleopEvents.FAILURE.value] = True
+                if "rollout_id" in control_event:
+                    events["_rlt_label_rollout_id"] = control_event.get("rollout_id")
+                if "critical_phase_id" in control_event:
+                    events["_rlt_label_critical_phase_id"] = control_event.get("critical_phase_id")
                 self._emit_rlt_status("tui_control", command=command)
             elif command == "discard_episode":
                 events[TeleopEvents.DISCARD_EPISODE] = True
@@ -876,6 +886,38 @@ class RobotClientDrtc:
     @staticmethod
     def _teleop_event(events: dict[Any, Any], event: TeleopEvents) -> bool:
         return bool(events.get(event, events.get(event.value, False)))
+
+    @staticmethod
+    def _rlt_optional_int(value: Any) -> int | None:
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _rlt_label_target_matches_current(self, teleop_events: dict[Any, Any]) -> bool:
+        target_rollout_id = self._rlt_optional_int(teleop_events.get("_rlt_label_rollout_id"))
+        target_critical_id = self._rlt_optional_int(teleop_events.get("_rlt_label_critical_phase_id"))
+        current_rollout_id = int(getattr(self, "_rlt_rollout_id", 0))
+        current_critical_id = int(getattr(self, "_rlt_episode_id", 0))
+        if target_rollout_id is not None and target_rollout_id != current_rollout_id:
+            self._emit_rlt_status(
+                "rlt_critical_label_ignored",
+                reason="rollout_mismatch",
+                target_rollout_id=target_rollout_id,
+                current_rollout_id=current_rollout_id,
+            )
+            return False
+        if target_critical_id is not None and target_critical_id != current_critical_id:
+            self._emit_rlt_status(
+                "rlt_critical_label_ignored",
+                reason="critical_phase_mismatch",
+                target_critical_phase_id=target_critical_id,
+                current_critical_phase_id=current_critical_id,
+            )
+            return False
+        return True
 
     def _is_intervening(self) -> bool:
         """Return True if the teleop device currently reports intervention."""
@@ -1365,9 +1407,9 @@ class RobotClientDrtc:
                 self._rlt_start_critical_phase()
             if end_critical:
                 self._rlt_end_critical_phase()
-        if success:
+        if success and self._rlt_label_target_matches_current(teleop_events):
             self._rlt_label_current_critical_phase(success=True)
-        elif failure:
+        elif failure and self._rlt_label_target_matches_current(teleop_events):
             self._rlt_label_current_critical_phase(success=False)
         if discard:
             self._rlt_discard_current_episode()
@@ -1426,8 +1468,7 @@ class RobotClientDrtc:
             self._emit_rlt_status("rlt_rollout_start_ignored", reason="rollout_already_open")
             return
         if self._rlt_critical_pending_label:
-            self._emit_rlt_status("rlt_rollout_start_ignored", reason="critical_pending_label")
-            return
+            self._rlt_discard_current_episode(reason="start_new_rollout")
         self._disable_teleop_intervention_for_episode_start()
         self._begin_new_inference_epoch("rollout_start")
         self._rlt_rollout_id += 1
@@ -1468,6 +1509,17 @@ class RobotClientDrtc:
             return
         if self._rlt_episode_open:
             self._rlt_end_critical_phase()
+        elif (
+            not self._rlt_critical_pending_label
+            and self._rlt_last_episode_label is None
+            and self._rlt_prebuffer_pending_chunks
+            and self._rlt_prebuffer_executed_actions
+        ):
+            # A base-VLA demo may be collected without explicitly opening a
+            # critical phase. Preserve it as a pending whole-rollout label before
+            # closing the rollout and clearing the prebuffer.
+            if self._rlt_start_missing_critical_from_rollout():
+                self._rlt_end_critical_phase()
         if enable_intervention_for_reset:
             self._set_teleop_intervention_enabled(True)
         else:

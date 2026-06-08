@@ -2165,7 +2165,9 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             )
         executed_np = actions_flat.reshape(num_actions, action_dim)
         executed_model = self._executed_actions_to_model_space(executed_np, source)
-        episode_id = int(transition.episode_id) + int(self._rlt_episode_id_offset)
+        client_episode_id = int(transition.episode_id)
+        episode_id = client_episode_id + int(self._rlt_episode_id_offset)
+        critical_phase_id = client_episode_id if client_episode_id > 0 else source.critical_phase_id
         use_executed_reference = (
             bool(transition.is_intervention) and self._rlt_intervention_reference_mode == "executed"
         )
@@ -2198,7 +2200,7 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             rlt_policy_mode=source.rlt_policy_mode,
             rlt_actor_executing=source.rlt_actor_executing,
             rollout_id=source.rollout_id,
-            critical_phase_id=source.critical_phase_id,
+            critical_phase_id=critical_phase_id,
         )
         with self._rlt_replay_lock:
             self._ensure_rlt_replay_components()
@@ -2225,13 +2227,13 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             transition_intervention=bool(transition.is_intervention),
             transition_frames=int(transition.num_actions),
             episode_id=episode_id,
-            client_episode_id=int(transition.episode_id),
+            client_episode_id=client_episode_id,
             rlt_checkpoint_step=source.rlt_checkpoint_step,
             policy_origin=source.policy_origin,
             rlt_policy_mode=source.rlt_policy_mode,
             rlt_actor_executing=source.rlt_actor_executing,
             rollout_id=source.rollout_id,
-            critical_phase_id=source.critical_phase_id,
+            critical_phase_id=critical_phase_id,
         )
         self._maybe_persist_rlt_replay()
         self._maybe_persist_rlt_review_archive()

@@ -86,9 +86,9 @@ rlt_success_sample_fraction: 0.5
 rlt_intervention_sample_fraction: 0.0
 rlt_train_freq_s: 2.0
 rlt_save_freq_steps: 10
-rlt_output_dir: outputs/rlt_molmoact2_so101_online_20260602_first47_residual_paperish_v26
-rlt_demo_buffer_path: outputs/rlt_molmoact2_so101_online/rlt_demo_replay_20260831_v3_first47_residual_paperish_v26.pt
-rlt_online_buffer_path: outputs/rlt_molmoact2_so101_online/rlt_online_replay_20260831_v3_online_residual_paperish_v26.pt
+rlt_output_dir: outputs/rlt_molmoact2_so101_online_20260602_first47_residual_paperish_v30
+rlt_demo_buffer_path: outputs/rlt_molmoact2_so101_online/rlt_demo_replay_20260831_v3_first47_residual_paperish_v30.pt
+rlt_online_buffer_path: outputs/rlt_molmoact2_so101_online/rlt_online_replay_20260831_v3_online_residual_paperish_v30.pt
 rlt_online_buffer_save_freq_transitions: 50
 rlt_persist_buffer_on_shutdown: true
 
@@ -96,13 +96,13 @@ rlt_persist_buffer_on_shutdown: true
 rlt_wandb_enabled: true
 rlt_wandb_project: lerobot-rlt
 rlt_wandb_entity:
-rlt_wandb_run_name: baseline_molmoact2_rlt_so101_online_residual_paperish_v26
+rlt_wandb_run_name: baseline_molmoact2_rlt_so101_online_residual_paperish_v30
 rlt_wandb_mode: online
 
 # Optional review capture for offline episode inspection.
 rlt_review_capture_enabled: true
 rlt_review_jpeg_quality: 80
-rlt_review_archive_path: outputs/rlt_molmoact2_so101_online/rlt_online_replay_20260831_v3_online_residual_paperish_v26_archive.pt
+rlt_review_archive_path: outputs/rlt_molmoact2_so101_online/rlt_online_replay_20260831_v3_online_residual_paperish_v30_archive.pt
 
 rlt_actor_lr: 0.00002
 rlt_critic_lr: 0.0001
