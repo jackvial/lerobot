@@ -627,6 +627,7 @@ class RobotClientDrtc:
         self._rlt_critical_end_ts: float | None = None
         self._rlt_critical_end_step = 0
         self._rlt_critical_pending_label = False
+        self._rlt_critical_inferred_from_rollout = False
         self._rlt_current_episode_transitions = 0
         self._rlt_current_episode_transition_buffer: list[services_pb2.RLTTransitionChunk] = []
         self._rlt_completed_episodes_count = 0
@@ -639,8 +640,8 @@ class RobotClientDrtc:
         if config.rlt_online_collection_enabled:
             self.logger.info(
                 "RLT collector phase: waiting_to_start_rollout | "
-                "press 2=start rollout, 5=start/end critical intervention, "
-                "0=mark last critical failure, 9=discard critical, 8=end rollout"
+                "press 2=start rollout/demo, 1=success, 0=failure, "
+                "3=start/end critical recording, 4=end rollout/reset, 9=discard critical"
             )
             self._emit_rlt_status("rlt_phase", phase="waiting_to_start_rollout")
             self._rlt_transition_sender_thread = threading.Thread(
@@ -684,6 +685,9 @@ class RobotClientDrtc:
             "critical_end_ts": getattr(self, "_rlt_critical_end_ts", None),
             "critical_end_step": getattr(self, "_rlt_critical_end_step", 0),
             "critical_pending_label": getattr(self, "_rlt_critical_pending_label", False),
+            "critical_inferred_from_rollout": getattr(
+                self, "_rlt_critical_inferred_from_rollout", False
+            ),
             "episodes_recorded": self._rlt_completed_episodes_count,
             "episodes_succeeded": self._rlt_success_episodes_count,
             "episodes_failed": self._rlt_failure_episodes_count,
@@ -1436,6 +1440,7 @@ class RobotClientDrtc:
         self._rlt_critical_end_ts = None
         self._rlt_critical_end_step = 0
         self._rlt_critical_pending_label = False
+        self._rlt_critical_inferred_from_rollout = False
         self._rlt_executed_actions.clear()
         self._rlt_pending_chunks.clear()
         self._rlt_emitted_context_ids.clear()
@@ -1447,7 +1452,7 @@ class RobotClientDrtc:
         self._rlt_phase_intervening = False
         self.logger.info(
             "RLT collector phase: rollout_running | rollout_id=%d | "
-            "press 3=start/end critical recording, 4=end rollout/reset",
+            "press 1=success, 0=failure, 3=start/end critical recording, 4=end rollout/reset",
             self._rlt_rollout_id,
         )
         self._emit_rlt_status(
@@ -1588,6 +1593,7 @@ class RobotClientDrtc:
         self._rlt_critical_end_ts = None
         self._rlt_critical_end_step = 0
         self._rlt_critical_pending_label = False
+        self._rlt_critical_inferred_from_rollout = bool(inferred_from_rollout)
         self._rlt_executed_actions.clear()
         self._rlt_pending_chunks.clear()
         self._rlt_emitted_context_ids.clear()
@@ -1691,7 +1697,7 @@ class RobotClientDrtc:
             return
         if self._rlt_episode_open:
             self._rlt_end_critical_phase()
-        elif success and not self._rlt_critical_pending_label:
+        elif not self._rlt_critical_pending_label:
             if self._rlt_start_missing_critical_from_rollout():
                 self._rlt_end_critical_phase()
         if not self._rlt_critical_pending_label:

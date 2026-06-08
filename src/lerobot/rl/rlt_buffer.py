@@ -34,11 +34,18 @@ class RLTReplaySample:
     failure: bool | None = None
     chunk_start_step: int | None = None
     rlt_checkpoint_step: int | None = None
+    # Policy provenance for composing/reviewing buffers after collection.
+    # `policy_origin` is a stable coarse label: "base_vla" or "rlt_head".
+    policy_origin: str | None = None
+    rlt_policy_mode: str | None = None
+    rlt_actor_executing: bool | None = None
+    rollout_id: int | None = None
+    critical_phase_id: int | None = None
 
 
 # Bumped whenever new fields are persisted. Loaders must remain backward
 # compatible with all prior versions by defaulting missing keys to None.
-RLT_REPLAY_BUFFER_VERSION = 3
+RLT_REPLAY_BUFFER_VERSION = 4
 RLT_REVIEW_SIDECAR_VERSION = 1
 _RLT_REVIEW_LABELS = {"success", "failure", "open"}
 _LOGGER = logging.getLogger(__name__)
@@ -177,6 +184,15 @@ class RLTReplayBuffer:
                 rlt_checkpoint_step=None
                 if sample.rlt_checkpoint_step is None
                 else int(sample.rlt_checkpoint_step),
+                policy_origin=None if sample.policy_origin is None else str(sample.policy_origin),
+                rlt_policy_mode=None if sample.rlt_policy_mode is None else str(sample.rlt_policy_mode),
+                rlt_actor_executing=None
+                if sample.rlt_actor_executing is None
+                else bool(sample.rlt_actor_executing),
+                rollout_id=None if sample.rollout_id is None else int(sample.rollout_id),
+                critical_phase_id=None
+                if sample.critical_phase_id is None
+                else int(sample.critical_phase_id),
             )
         )
 
@@ -349,6 +365,15 @@ class RLTReplayBuffer:
                 "rlt_checkpoint_step": None
                 if sample.rlt_checkpoint_step is None
                 else int(sample.rlt_checkpoint_step),
+                "policy_origin": None if sample.policy_origin is None else str(sample.policy_origin),
+                "rlt_policy_mode": None if sample.rlt_policy_mode is None else str(sample.rlt_policy_mode),
+                "rlt_actor_executing": None
+                if sample.rlt_actor_executing is None
+                else bool(sample.rlt_actor_executing),
+                "rollout_id": None if sample.rollout_id is None else int(sample.rollout_id),
+                "critical_phase_id": None
+                if sample.critical_phase_id is None
+                else int(sample.critical_phase_id),
             }
             return state
 
@@ -381,6 +406,11 @@ class RLTReplayBuffer:
                     failure=sample.get("failure"),
                     chunk_start_step=sample.get("chunk_start_step"),
                     rlt_checkpoint_step=sample.get("rlt_checkpoint_step"),
+                    policy_origin=sample.get("policy_origin"),
+                    rlt_policy_mode=sample.get("rlt_policy_mode"),
+                    rlt_actor_executing=sample.get("rlt_actor_executing"),
+                    rollout_id=sample.get("rollout_id"),
+                    critical_phase_id=sample.get("critical_phase_id"),
                 )
             )
 

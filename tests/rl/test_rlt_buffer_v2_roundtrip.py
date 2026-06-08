@@ -24,6 +24,11 @@ def _v2_sample(
     inference_ts: float | None = None,
     chunk_start_step: int | None = None,
     rlt_checkpoint_step: int | None = None,
+    policy_origin: str | None = None,
+    rlt_policy_mode: str | None = None,
+    rlt_actor_executing: bool | None = None,
+    rollout_id: int | None = None,
+    critical_phase_id: int | None = None,
 ) -> RLTReplaySample:
     return RLTReplaySample(
         rl_token=torch.ones(4) + offset,
@@ -43,6 +48,11 @@ def _v2_sample(
         failure=failure,
         chunk_start_step=chunk_start_step,
         rlt_checkpoint_step=rlt_checkpoint_step,
+        policy_origin=policy_origin,
+        rlt_policy_mode=rlt_policy_mode,
+        rlt_actor_executing=rlt_actor_executing,
+        rollout_id=rollout_id,
+        critical_phase_id=critical_phase_id,
     )
 
 
@@ -66,6 +76,11 @@ def test_v2_save_load_round_trip_preserves_review_fields(tmp_path):
             images_jpeg={"observation.images.front": b"\xff\xd8\xff\xd9"},  # SOI/EOI markers
             chunk_start_step=10,
             rlt_checkpoint_step=250,
+            policy_origin="base_vla",
+            rlt_policy_mode="vla_passthrough",
+            rlt_actor_executing=False,
+            rollout_id=2,
+            critical_phase_id=7,
         )
     )
     replay.add(
@@ -81,6 +96,11 @@ def test_v2_save_load_round_trip_preserves_review_fields(tmp_path):
             },
             chunk_start_step=20,
             rlt_checkpoint_step=260,
+            policy_origin="rlt_head",
+            rlt_policy_mode="rlt_actor",
+            rlt_actor_executing=True,
+            rollout_id=2,
+            critical_phase_id=7,
         )
     )
 
@@ -99,6 +119,11 @@ def test_v2_save_load_round_trip_preserves_review_fields(tmp_path):
     assert s0.inference_ts == 1234.5
     assert s0.chunk_start_step == 10
     assert s0.rlt_checkpoint_step == 250
+    assert s0.policy_origin == "base_vla"
+    assert s0.rlt_policy_mode == "vla_passthrough"
+    assert s0.rlt_actor_executing is False
+    assert s0.rollout_id == 2
+    assert s0.critical_phase_id == 7
     assert s0.images_jpeg == {"observation.images.front": b"\xff\xd8\xff\xd9"}
 
     assert s1.episode_id == 7
@@ -108,6 +133,11 @@ def test_v2_save_load_round_trip_preserves_review_fields(tmp_path):
     assert s1.inference_ts == 1235.0
     assert s1.chunk_start_step == 20
     assert s1.rlt_checkpoint_step == 260
+    assert s1.policy_origin == "rlt_head"
+    assert s1.rlt_policy_mode == "rlt_actor"
+    assert s1.rlt_actor_executing is True
+    assert s1.rollout_id == 2
+    assert s1.critical_phase_id == 7
     assert set(s1.images_jpeg.keys()) == {
         "observation.images.front",
         "observation.images.wrist",
@@ -118,7 +148,7 @@ def test_state_dict_announces_current_version():
     replay = RLTReplayBuffer(capacity=2)
     replay.add(_v2_sample(episode_id=0))
     state = replay.state_dict()
-    assert state["version"] == RLT_REPLAY_BUFFER_VERSION == 3
+    assert state["version"] == RLT_REPLAY_BUFFER_VERSION == 4
 
 
 def test_loading_v1_buffer_defaults_review_fields_to_none(tmp_path):
@@ -136,6 +166,11 @@ def test_loading_v1_buffer_defaults_review_fields_to_none(tmp_path):
         "failure",
         "chunk_start_step",
         "rlt_checkpoint_step",
+        "policy_origin",
+        "rlt_policy_mode",
+        "rlt_actor_executing",
+        "rollout_id",
+        "critical_phase_id",
     }
     for sample in state_dict["samples"]:
         for key in v1_keys_to_drop:
@@ -156,6 +191,11 @@ def test_loading_v1_buffer_defaults_review_fields_to_none(tmp_path):
     assert s.failure is None
     assert s.chunk_start_step is None
     assert s.rlt_checkpoint_step is None
+    assert s.policy_origin is None
+    assert s.rlt_policy_mode is None
+    assert s.rlt_actor_executing is None
+    assert s.rollout_id is None
+    assert s.critical_phase_id is None
     # And v1 fields are still intact.
     assert s.rl_token.shape == (4,)
     assert bool(s.done) is False

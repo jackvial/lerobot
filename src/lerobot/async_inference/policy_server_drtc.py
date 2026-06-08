@@ -224,6 +224,11 @@ class RLTSourceContext:
     images_jpeg: dict[str, bytes] | None = None
     inference_ts: float | None = None
     rlt_checkpoint_step: int | None = None
+    policy_origin: str | None = None
+    rlt_policy_mode: str | None = None
+    rlt_actor_executing: bool | None = None
+    rollout_id: int | None = None
+    critical_phase_id: int | None = None
 
 
 class RLTSourceContextCache:
@@ -554,6 +559,7 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
         with self._rlt_replay_lock:
             self._ensure_rlt_replay_components()
             replay_size = len(self._rlt_replay)
+            replay_outcome_stats = self._rlt_replay_outcome_stats_locked()
             demo_replay_retained_size = len(self._rlt_training_demo_samples())
             online_replay_size = len(self._rlt_online_replay)
             online_replay_capacity = self._rlt_online_replay.capacity
@@ -571,9 +577,18 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             getattr(self, "_rlt_actor_optimizer", None) is not None
             and getattr(self, "_rlt_critic_optimizer", None) is not None
         )
+        success_sample_fraction = float(getattr(self, "_rlt_success_sample_fraction", 0.0) or 0.0)
+        intervention_sample_fraction = float(
+            getattr(self, "_rlt_intervention_sample_fraction", 0.0) or 0.0
+        )
+        failure_sample_fraction = max(
+            0.0,
+            1.0 - success_sample_fraction - intervention_sample_fraction,
+        )
         status_fields = {
             "rlt_replay_size": replay_size,
             "rlt_replay_capacity": self._rlt_replay_capacity,
+            **replay_outcome_stats,
             "rlt_completed_episodes": completed_episodes,
             "rlt_warmup_episodes": required_warmup_episodes,
             "rlt_warmup_transitions": warmup_transitions,
@@ -625,8 +640,9 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             "rlt_accepted_transitions": self._rlt_accepted_transitions,
             "rlt_accepted_frames": getattr(self, "_rlt_accepted_frames", 0),
             "rlt_critic_updates_per_actor": getattr(self, "_rlt_critic_updates_per_actor", 1),
-            "rlt_success_sample_fraction": getattr(self, "_rlt_success_sample_fraction", 0.0),
-            "rlt_intervention_sample_fraction": getattr(self, "_rlt_intervention_sample_fraction", 0.0),
+            "rlt_success_sample_fraction": success_sample_fraction,
+            "rlt_failure_sample_fraction": failure_sample_fraction,
+            "rlt_intervention_sample_fraction": intervention_sample_fraction,
             "rlt_intervention_reference_mode": getattr(self, "_rlt_intervention_reference_mode", "executed"),
             "rlt_wandb_enabled": getattr(self, "_rlt_wandb_enabled", False),
             "rlt_wandb_active": getattr(self, "_rlt_wandb_run", None) is not None,
@@ -869,6 +885,14 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             return int(value)
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _rlt_policy_origin(policy_mode: str | None, actor_executing: bool | None) -> str | None:
+        if actor_executing is True or policy_mode == "rlt_actor":
+            return "rlt_head"
+        if actor_executing is False or policy_mode:
+            return "base_vla"
+        return None
 
     @staticmethod
     def _rlt_reward_or_default(value: Any, default: float) -> float:
@@ -1741,6 +1765,9 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
         action_deviation_abs_max: float | None,
         window_start_index: int,
         window_len: int,
+        rollout_id: int | None = None,
+        critical_phase_id: int | None = None,
+        rollout_open: bool = False,
     ) -> None:
         if not policy_mode:
             return
@@ -1774,6 +1801,9 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             bool(self._rlt_actor_disabled_by_safety),
             bool(actor_loaded),
             int(self._rlt_train_step),
+            rollout_id,
+            critical_phase_id,
+            bool(rollout_open),
         )
         now = time.time()
         if (
@@ -1796,6 +1826,10 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             rlt_actor_loaded=actor_loaded,
             rlt_execute_after_train_steps=int(self._rlt_execute_after_train_steps),
             rlt_steps_until_execute=steps_until_execute,
+            rollout_id=rollout_id,
+            critical_phase_id=critical_phase_id,
+            rollout_open=bool(rollout_open),
+            critical_phase_open=bool(critical_phase_active),
         )
         self.logger.info(
             "RLT inference: mode=%s gate=%s critical=%s actor_executing=%s "
@@ -1832,6 +1866,9 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
         rtc_kwargs: dict[str, Any],
         *,
         critical_phase_active: bool,
+        rollout_id: int | None = None,
+        critical_phase_id: int | None = None,
+        rollout_open: bool = False,
     ) -> tuple[
         torch.Tensor,
         torch.Tensor,
@@ -1933,6 +1970,9 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
                 action_deviation_abs_max=action_deviation_abs_max,
                 window_start_index=window_start,
                 window_len=rlt_window,
+                rollout_id=rollout_id,
+                critical_phase_id=critical_phase_id,
+                rollout_open=rollout_open,
             )
         return (
             action_tensor,
@@ -2001,6 +2041,10 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
         review_submission_id: int | None = None,
         review_inference_ts: float | None = None,
         rlt_checkpoint_step: int | None = None,
+        rlt_policy_mode: str | None = None,
+        rlt_actor_executing: bool | None = None,
+        rollout_id: int | None = None,
+        critical_phase_id: int | None = None,
     ) -> int:
         context_id = self._next_rlt_context_id_value()
         rlt_window = min(
@@ -2037,6 +2081,13 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             images_jpeg=images_jpeg,
             inference_ts=review_inference_ts,
             rlt_checkpoint_step=None if rlt_checkpoint_step is None else int(rlt_checkpoint_step),
+            policy_origin=self._rlt_policy_origin(rlt_policy_mode, rlt_actor_executing),
+            rlt_policy_mode=None if rlt_policy_mode is None else str(rlt_policy_mode),
+            rlt_actor_executing=None
+            if rlt_actor_executing is None
+            else bool(rlt_actor_executing),
+            rollout_id=rollout_id,
+            critical_phase_id=critical_phase_id,
         )
         self._rlt_context_cache.put(context)
         self._metrics.diagnostic.counter("rlt_context_cached", 1)
@@ -2143,6 +2194,11 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             failure=bool(transition.failure),
             chunk_start_step=int(transition.chunk_start_step),
             rlt_checkpoint_step=source.rlt_checkpoint_step,
+            policy_origin=source.policy_origin,
+            rlt_policy_mode=source.rlt_policy_mode,
+            rlt_actor_executing=source.rlt_actor_executing,
+            rollout_id=source.rollout_id,
+            critical_phase_id=source.critical_phase_id,
         )
         with self._rlt_replay_lock:
             self._ensure_rlt_replay_components()
@@ -2171,6 +2227,11 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
             episode_id=episode_id,
             client_episode_id=int(transition.episode_id),
             rlt_checkpoint_step=source.rlt_checkpoint_step,
+            policy_origin=source.policy_origin,
+            rlt_policy_mode=source.rlt_policy_mode,
+            rlt_actor_executing=source.rlt_actor_executing,
+            rollout_id=source.rollout_id,
+            critical_phase_id=source.critical_phase_id,
         )
         self._maybe_persist_rlt_replay()
         self._maybe_persist_rlt_review_archive()
@@ -3645,6 +3706,13 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
         else:
             raw_obs = raw_obs_any
         critical_phase_active = bool(isinstance(rlt_meta, dict) and rlt_meta.get("critical_phase_open"))
+        rlt_rollout_open = bool(isinstance(rlt_meta, dict) and rlt_meta.get("rollout_open"))
+        rlt_rollout_id = (
+            self._rlt_int_or_none(rlt_meta.get("rollout_id")) if isinstance(rlt_meta, dict) else None
+        )
+        rlt_critical_phase_id = (
+            self._rlt_int_or_none(rlt_meta.get("critical_phase_id")) if isinstance(rlt_meta, dict) else None
+        )
         self._rlt_actor_critical_phase_active = critical_phase_active
         _mark("obs_meta")
         # Kick off review image encoding in parallel with the rest of inference.
@@ -3815,6 +3883,9 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
                     observation,
                     rtc_kwargs,
                     critical_phase_active=critical_phase_active,
+                    rollout_id=rlt_rollout_id,
+                    critical_phase_id=rlt_critical_phase_id,
+                    rollout_open=rlt_rollout_open,
                 )
             else:
                 action_tensor = self._get_action_chunk(observation, **rtc_kwargs)
@@ -3859,6 +3930,10 @@ class PolicyServerDrtc(services_pb2_grpc.AsyncInferenceServicer):
                 review_submission_id=review_submission_id,
                 review_inference_ts=review_inference_ts,
                 rlt_checkpoint_step=rlt_checkpoint_step,
+                rlt_policy_mode=rlt_policy_mode,
+                rlt_actor_executing=bool(rlt_policy_mode == "rlt_actor"),
+                rollout_id=rlt_rollout_id,
+                critical_phase_id=rlt_critical_phase_id,
             )
             rlt_collectable = True
         if rlt_policy_mode:

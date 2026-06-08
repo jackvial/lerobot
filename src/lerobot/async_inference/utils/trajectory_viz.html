@@ -307,6 +307,10 @@
             min-width: 0;
         }
 
+        .rlt-metric.wide {
+            grid-column: span 2;
+        }
+
         .rlt-metric-label {
             display: block;
             font-size: 9px;
@@ -316,6 +320,14 @@
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
+        }
+
+        .rlt-metric-value.compact {
+            font-size: 13px;
+            line-height: 1.2;
+            white-space: normal;
+            overflow: visible;
+            text-overflow: clip;
         }
 
         .rlt-metric-value {
@@ -568,8 +580,61 @@
             margin-bottom: 12px;
         }
 
+        .rollouts-title-group {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            min-width: 0;
+        }
+
         .rollouts-title-row .rollouts-title {
             margin-bottom: 0;
+        }
+
+        .rollouts-summary {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 6px;
+            min-width: 0;
+        }
+
+        .rollouts-summary-chip {
+            border: 1px solid var(--structural-black);
+            background: var(--bg-cream);
+            color: var(--structural-black);
+            font-family: 'Courier New', monospace;
+            font-size: 10px;
+            font-weight: 800;
+            line-height: 1;
+            padding: 5px 7px;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+
+        .rollouts-summary-chip.rlt,
+        .rollout-execution.rlt {
+            background: #2d6a4f;
+            color: var(--bg-white);
+        }
+
+        .rollouts-summary-chip.vla,
+        .rollout-execution.vla {
+            background: var(--primary-yellow);
+            color: var(--structural-black);
+        }
+
+        .rollouts-summary-chip.mixed,
+        .rollout-execution.mixed {
+            background: var(--primary-blue);
+            color: var(--bg-white);
+        }
+
+        .rollouts-summary-chip.unknown,
+        .rollout-execution.unknown {
+            background: var(--bg-white);
+            color: var(--text-muted);
         }
 
         .rollouts-control-status {
@@ -623,7 +688,7 @@
             width: 100%;
             border-collapse: collapse;
             font-size: 12px;
-            min-width: 1240px;
+            min-width: 1340px;
         }
 
         .rollouts-table th,
@@ -644,6 +709,16 @@
 
         .rollouts-table td {
             font-family: 'Courier New', monospace;
+        }
+
+        .rollout-execution {
+            display: inline-block;
+            border: 1px solid var(--structural-black);
+            font-size: 10px;
+            font-weight: 900;
+            line-height: 1;
+            padding: 5px 7px;
+            text-transform: uppercase;
         }
 
         .rollout-actions {
@@ -1281,6 +1356,9 @@
             .rlt-metrics-grid {
                 grid-template-columns: repeat(2, 1fr);
             }
+            .rlt-metric.wide {
+                grid-column: 1 / -1;
+            }
             .rlt-comparison-metrics {
                 grid-template-columns: repeat(2, 1fr);
             }
@@ -1301,6 +1379,10 @@
                 text-align: left;
             }
             .rollouts-title-row {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+            .rollouts-title-group {
                 align-items: flex-start;
                 flex-direction: column;
             }
@@ -1379,6 +1461,22 @@
                 <div class="rlt-metric">
                     <span class="rlt-metric-label">Online Replay</span>
                     <span class="rlt-metric-value" id="rlt-online-replay">--</span>
+                </div>
+                <div class="rlt-metric">
+                    <span class="rlt-metric-label">Replay Success</span>
+                    <span class="rlt-metric-value" id="rlt-replay-success-pct">--</span>
+                </div>
+                <div class="rlt-metric">
+                    <span class="rlt-metric-label">Replay Fail</span>
+                    <span class="rlt-metric-value" id="rlt-replay-failure-pct">--</span>
+                </div>
+                <div class="rlt-metric wide">
+                    <span class="rlt-metric-label">Sample S/F</span>
+                    <span class="rlt-metric-value compact" id="rlt-sample-sf">--</span>
+                </div>
+                <div class="rlt-metric wide">
+                    <span class="rlt-metric-label">Batch S/F</span>
+                    <span class="rlt-metric-value compact" id="rlt-batch-sf">--</span>
                 </div>
                 <div class="rlt-metric">
                     <span class="rlt-metric-label">Actor Loss</span>
@@ -1470,7 +1568,15 @@
 
     <div class="rollouts-panel">
         <div class="rollouts-title-row">
-            <div class="rollouts-title">RLT Rollouts</div>
+            <div class="rollouts-title-group">
+                <div class="rollouts-title">RLT Rollouts</div>
+                <div class="rollouts-summary" id="rollouts-summary">
+                    <span class="rollouts-summary-chip vla">VLA 0</span>
+                    <span class="rollouts-summary-chip rlt">RLT 0</span>
+                    <span class="rollouts-summary-chip mixed">Mixed 0</span>
+                    <span class="rollouts-summary-chip unknown">Unknown 0</span>
+                </div>
+            </div>
             <div class="rollouts-control-status" id="rollouts-control-status">
                 Row actions send labels to the active/pending critical phase.
             </div>
@@ -1483,6 +1589,7 @@
                         <th>Critical</th>
                         <th>Server Ep</th>
                         <th>Status</th>
+                        <th>Policy</th>
                         <th>Rollout Start</th>
                         <th>Critical Start</th>
                         <th>Critical End</th>
@@ -1495,7 +1602,7 @@
                     </tr>
                 </thead>
                 <tbody id="rollouts-table-body">
-                    <tr><td colspan="13"><div class="rollouts-empty">Waiting for rollout events...</div></td></tr>
+                    <tr><td colspan="14"><div class="rollouts-empty">Waiting for rollout events...</div></td></tr>
                 </tbody>
             </table>
         </div>
@@ -1788,6 +1895,19 @@
         function numericOrNull(value) {
             const n = Number(value);
             return Number.isFinite(n) ? n : null;
+        }
+
+        function formatPercent(value, decimals = 1) {
+            const n = numericOrNull(value);
+            if (n === null) return '--';
+            return `${(n * 100).toFixed(decimals)}%`;
+        }
+
+        function formatSuccessFail(successValue, failureValue, decimals = 1) {
+            const success = numericOrNull(successValue);
+            const failure = numericOrNull(failureValue);
+            if (success === null && failure === null) return '--';
+            return `S ${formatPercent(success, decimals)} / F ${formatPercent(failure, decimals)}`;
         }
 
         function formatTimestamp(value) {
@@ -3022,6 +3142,70 @@
                 .replace(/\b\w/g, c => c.toUpperCase());
         }
 
+        function updateRolloutExecution(row, data) {
+            const origin = String(data.policy_origin || '');
+            const mode = String(data.rlt_policy_mode || data.policy_mode || '');
+            const hasActorExecuting = data.rlt_actor_executing !== undefined || data.actor_executing !== undefined;
+            const actorExecuting = hasActorExecuting
+                ? boolValue(data.rlt_actor_executing ?? data.actor_executing)
+                : null;
+            if (!origin && !mode && actorExecuting === null) return;
+
+            row.lastPolicyOrigin = origin || row.lastPolicyOrigin;
+            row.lastPolicyMode = mode || row.lastPolicyMode;
+            row.lastActorExecuting = actorExecuting ?? row.lastActorExecuting;
+            row.lastPolicyGateReason = data.rlt_actor_gate_reason || row.lastPolicyGateReason;
+
+            if (origin === 'rlt_head' || actorExecuting === true || mode === 'rlt_actor') {
+                row.sawRltExecution = true;
+                return;
+            }
+
+            const vlaModes = new Set([
+                'vla_passthrough',
+                'vla_non_critical',
+                'warmup',
+                'rlt_actor_operator_disabled',
+                'rlt_safety_passthrough',
+                'configured',
+                'not_configured',
+            ]);
+            if (actorExecuting === false || vlaModes.has(mode)) {
+                row.sawVlaExecution = true;
+            }
+            if (origin === 'base_vla') {
+                row.sawVlaExecution = true;
+            }
+        }
+
+        function rolloutExecutionSummary(row) {
+            if (row.sawRltExecution && row.sawVlaExecution) {
+                return { key: 'mixed', label: 'Mixed' };
+            }
+            if (row.sawRltExecution) {
+                return { key: 'rlt', label: 'RLT Head' };
+            }
+            if (row.sawVlaExecution) {
+                return { key: 'vla', label: 'VLA Only' };
+            }
+            return { key: 'unknown', label: 'Unknown' };
+        }
+
+        function renderRolloutsSummary(rows) {
+            const el = document.getElementById('rollouts-summary');
+            if (!el) return;
+            const counts = { vla: 0, rlt: 0, mixed: 0, unknown: 0 };
+            for (const row of rows) {
+                counts[rolloutExecutionSummary(row).key] += 1;
+            }
+            el.innerHTML = `
+                <span class="rollouts-summary-chip vla">VLA ${counts.vla}</span>
+                <span class="rollouts-summary-chip rlt">RLT ${counts.rlt}</span>
+                <span class="rollouts-summary-chip mixed">Mixed ${counts.mixed}</span>
+                <span class="rollouts-summary-chip unknown">Unknown ${counts.unknown}</span>
+            `;
+        }
+
         function renderEpisodeHistory() {
             const container = document.getElementById('episode-history');
             container.innerHTML = '';
@@ -3086,14 +3270,38 @@
                 if (rolloutStartTs !== null) {
                     rolloutState.rolloutStarts.set(String(rolloutId), rolloutStartTs);
                 }
+                const row = ensureRolloutRow(`rollout:${rolloutId}`, {
+                    kind: 'rollout',
+                    rolloutId,
+                    criticalPhaseId: null,
+                    rolloutStartTs,
+                    label: 'open',
+                    discard: false,
+                    status: 'rollout open',
+                });
+                row.kind = 'rollout';
+                row.rolloutId = rolloutId;
+                row.rolloutStartTs = rolloutStartTs ?? row.rolloutStartTs;
+                row.rolloutStartStep = numericOrNull(data.rollout_start_step) ?? row.rolloutStartStep;
+                row.status = 'rollout open';
+                row.label = row.label || 'open';
+                updateRolloutExecution(row, data);
+                renderRolloutsTable();
                 return;
             }
 
             if (eventName === 'rlt_rollout_ended' && rolloutId !== null) {
                 const rolloutEndTs = numericOrNull(data.rollout_end_ts) ?? numericOrNull(data.timestamp);
                 const rolloutDurationS = numericOrNull(data.rollout_duration_s);
+                const rolloutRow = rolloutState.rows.get(`rollout:${rolloutId}`);
+                if (rolloutRow) {
+                    rolloutRow.rolloutEndTs = rolloutEndTs ?? rolloutRow.rolloutEndTs;
+                    rolloutRow.rolloutDurationS = rolloutDurationS ?? rolloutRow.rolloutDurationS;
+                    rolloutRow.status = rolloutRow.label && rolloutRow.label !== 'open' ? rolloutRow.status : 'rollout ended';
+                    updateRolloutExecution(rolloutRow, data);
+                }
                 for (const row of rolloutState.rows.values()) {
-                    if (Number(row.rolloutId) === rolloutId && row.criticalPhaseId !== undefined && row.criticalPhaseId !== null) {
+                    if (Number(row.rolloutId) === rolloutId) {
                         row.rolloutEndTs = rolloutEndTs ?? row.rolloutEndTs;
                         row.rolloutDurationS = rolloutDurationS ?? row.rolloutDurationS;
                     }
@@ -3103,13 +3311,36 @@
             }
 
             const criticalId = numericOrNull(data.critical_phase_id ?? data.episode_id);
-            const hasCriticalEvent = eventName.includes('critical') || data.critical_phase_open || data.critical_pending_label;
+            const inferredFromRollout = boolValue(
+                data.critical_inferred_from_rollout ?? data.inferred_from_rollout
+            );
+            if (
+                eventName === 'rlt_inference_state' &&
+                rolloutId !== null &&
+                criticalId !== null &&
+                !data.critical_phase_open
+            ) {
+                const rolloutRow = rolloutState.rows.get(`rollout:${rolloutId}`);
+                if (rolloutRow) {
+                    updateRolloutExecution(rolloutRow, data);
+                    renderRolloutsTable();
+                }
+                return;
+            }
+            const hasCriticalEvent = (
+                eventName.includes('critical') ||
+                eventName === 'rlt_transition_accepted' ||
+                data.critical_phase_open ||
+                data.critical_pending_label ||
+                data.policy_origin
+            );
             if (rolloutId === null || criticalId === null || criticalId <= 0 || !hasCriticalEvent) {
                 return;
             }
 
-            const key = `critical:${rolloutId}:${criticalId}`;
+            const key = inferredFromRollout ? `rollout:${rolloutId}` : `critical:${rolloutId}:${criticalId}`;
             const row = ensureRolloutRow(key, {
+                kind: inferredFromRollout ? 'rollout' : 'critical',
                 rolloutId,
                 criticalPhaseId: criticalId,
                 rolloutStartTs: rolloutState.rolloutStarts.get(String(rolloutId)),
@@ -3118,10 +3349,12 @@
                 status: 'open',
             });
 
+            row.kind = inferredFromRollout ? 'rollout' : (row.kind || 'critical');
             row.rolloutStartTs = numericOrNull(data.rollout_start_ts) ?? row.rolloutStartTs;
             row.rolloutStartStep = numericOrNull(data.rollout_start_step) ?? row.rolloutStartStep;
             row.criticalPhaseId = criticalId;
             row.transitions = numericOrNull(data.current_critical_transitions ?? data.current_episode_transitions) ?? row.transitions;
+            updateRolloutExecution(row, data);
 
             if (eventName === 'rlt_critical_phase_started' || eventName === 'rlt_critical_intervention_started') {
                 row.criticalStartS = numericOrNull(data.critical_start_s) ?? row.criticalStartS;
@@ -3173,17 +3406,23 @@
             if (!body) return;
             const rows = rolloutState.order
                 .map(key => rolloutState.rows.get(key))
-                .filter(row => row && row.criticalPhaseId !== undefined && row.criticalPhaseId !== null)
+                .filter(row => row && (
+                    row.kind === 'rollout' ||
+                    (row.criticalPhaseId !== undefined && row.criticalPhaseId !== null)
+                ))
                 .slice(-MAX_ROLLOUT_ROWS)
                 .reverse();
 
             if (rows.length === 0) {
-                body.innerHTML = '<tr><td colspan="13"><div class="rollouts-empty">Waiting for rollout events...</div></td></tr>';
+                renderRolloutsSummary(rows);
+                body.innerHTML = '<tr><td colspan="14"><div class="rollouts-empty">Waiting for rollout events...</div></td></tr>';
                 return;
             }
+            renderRolloutsSummary(rows);
 
             body.innerHTML = rows.map(row => {
                 const label = row.label || 'open';
+                const execution = rolloutExecutionSummary(row);
                 const rowKey = escapeHtml(row.key || `rollout:${row.rolloutId ?? 'unknown'}`);
                 const duration = row.criticalStartS !== undefined && row.criticalEndS !== undefined
                     ? formatSeconds(Number(row.criticalEndS) - Number(row.criticalStartS))
@@ -3199,6 +3438,12 @@
                         <td>${escapeHtml(row.criticalPhaseId ?? '--')}</td>
                         <td>${escapeHtml(row.serverEpisodeId ?? '--')}</td>
                         <td>${escapeHtml(row.status ?? '--')}</td>
+                        <td>
+                            <span
+                                class="rollout-execution ${escapeHtml(execution.key)}"
+                                title="${escapeHtml(row.lastPolicyMode || row.lastPolicyOrigin || row.lastPolicyGateReason || execution.label)}"
+                            >${escapeHtml(execution.label)}</span>
+                        </td>
                         <td>${escapeHtml(formatTimestamp(row.rolloutStartTs))}</td>
                         <td>${escapeHtml(formatSeconds(row.criticalStartS))}</td>
                         <td>${escapeHtml(formatSeconds(row.criticalEndS))}</td>
@@ -3632,6 +3877,18 @@
             const replaySize = pickMetric(['rlt_replay_size']);
             const replayCapacity = pickMetric(['rlt_replay_capacity']);
             const onlineReplay = pickMetric(['rlt_online_replay_size']);
+            const replaySuccessFraction = pickMetric(['rlt_replay_sample_success_fraction']);
+            const replayFailureFraction = pickMetric(['rlt_replay_sample_failure_fraction']);
+            const sampleSuccessFraction = pickMetric(['rlt_success_sample_fraction']);
+            const sampleInterventionFraction = pickMetric(['rlt_intervention_sample_fraction']);
+            const sampleFailureFraction = pickMetric(['rlt_failure_sample_fraction']) ??
+                (
+                    numericOrNull(sampleSuccessFraction) !== null && numericOrNull(sampleInterventionFraction) !== null
+                        ? Math.max(0, 1 - Number(sampleSuccessFraction) - Number(sampleInterventionFraction))
+                        : null
+                );
+            const batchSuccessFraction = pickMetric(['rlt_batch_success_fraction']);
+            const batchFailureFraction = pickMetric(['rlt_batch_failure_fraction']);
             const actorLoss = pickMetric(['rlt_actor_loss', 'actor_loss']);
             const criticLoss = pickMetric(['rlt_critic_loss', 'critic_loss']);
             const actorGrad = pickMetric(['rlt_actor_grad_norm']);
@@ -3656,6 +3913,10 @@
                 replaySize === null ? '--' : `${formatCount(replaySize)}${replayCapacity === null ? '' : `/${formatCount(replayCapacity)}`}`
             );
             setText('rlt-online-replay', formatCount(onlineReplay));
+            setText('rlt-replay-success-pct', formatPercent(replaySuccessFraction));
+            setText('rlt-replay-failure-pct', formatPercent(replayFailureFraction));
+            setText('rlt-sample-sf', formatSuccessFail(sampleSuccessFraction, sampleFailureFraction));
+            setText('rlt-batch-sf', formatSuccessFail(batchSuccessFraction, batchFailureFraction));
             setText('rlt-actor-loss', formatValue(actorLoss));
             setText('rlt-critic-loss', formatValue(criticLoss));
             setText('rlt-actor-grad', formatValue(actorGrad));

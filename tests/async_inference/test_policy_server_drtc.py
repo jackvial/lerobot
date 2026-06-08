@@ -310,6 +310,21 @@ def test_rlt_inference_status_persists_actor_usage_and_vla_delta(monkeypatch):
         action_deviation_abs_max=0.5,
         window_start_index=2,
         window_len=10,
+        rollout_id=7,
+        critical_phase_id=3,
+        rollout_open=True,
+    )
+    server._emit_rlt_inference_status(
+        policy_mode="rlt_actor",
+        critical_phase_active=True,
+        actor_executing=True,
+        action_deviation_rms=0.125,
+        action_deviation_abs_max=0.5,
+        window_start_index=2,
+        window_len=10,
+        rollout_id=7,
+        critical_phase_id=4,
+        rollout_open=True,
     )
     server._emit_rlt_status("rlt_training_state")
 
@@ -319,12 +334,55 @@ def test_rlt_inference_status_persists_actor_usage_and_vla_delta(monkeypatch):
     assert inference_fields["rlt_actor_gate_reason"] == "executing"
     assert inference_fields["rlt_action_deviation_rms"] == 0.125
     assert inference_fields["rlt_action_deviation_abs_max"] == 0.5
+    assert inference_fields["rollout_id"] == 7
+    assert inference_fields["critical_phase_id"] == 3
+    assert inference_fields["rollout_open"] is True
+    assert inference_fields["critical_phase_open"] is True
 
-    later_fields = emitted[1][2]
+    next_inference_fields = emitted[1][2]
+    assert next_inference_fields["critical_phase_id"] == 4
+
+    later_fields = emitted[2][2]
     assert later_fields["rlt_policy_mode"] == "rlt_actor"
     assert later_fields["rlt_actor_executing"] is True
     assert later_fields["rlt_action_deviation_rms"] == 0.125
     assert later_fields["rlt_action_deviation_abs_max"] == 0.5
+
+
+@require_package("grpcio", "grpc")
+def test_rlt_status_reports_replay_outcome_mix_and_sampling_weights(monkeypatch):
+    from lerobot.async_inference import policy_server_drtc
+
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        policy_server_drtc,
+        "emit_status",
+        lambda source, event, **fields: emitted.append((source, event, fields)),
+    )
+
+    server = _server_for_rlt_status(policy_server_drtc)
+    success = _sample(0.0)
+    success.success = True
+    success.failure = False
+    success.reward = 1.0
+    failure = _sample(1.0)
+    failure.success = False
+    failure.failure = True
+    failure.reward = 0.0
+    server._rlt_replay.extend([success, failure])
+    server._rlt_success_sample_fraction = 0.6
+    server._rlt_intervention_sample_fraction = 0.1
+
+    server._emit_rlt_status("rlt_training_state")
+
+    fields = emitted[0][2]
+    assert fields["rlt_replay_sample_success_fraction"] == 0.5
+    assert fields["rlt_replay_sample_failure_fraction"] == 0.5
+    assert fields["rlt_replay_sample_success_count"] == 1.0
+    assert fields["rlt_replay_sample_failure_count"] == 1.0
+    assert fields["rlt_success_sample_fraction"] == 0.6
+    assert fields["rlt_failure_sample_fraction"] == 0.3
+    assert fields["rlt_intervention_sample_fraction"] == 0.1
 
 
 def _server_for_accept_transition(policy_server_drtc):
@@ -477,12 +535,21 @@ def test_cache_rlt_source_context_uses_shifted_window(monkeypatch):
         anchor_state=None,
         window_start_index=2,
         rlt_checkpoint_step=123,
+        rlt_policy_mode="vla_passthrough",
+        rlt_actor_executing=False,
+        rollout_id=2,
+        critical_phase_id=7,
     )
 
     cached = server._rlt_context_cache.get(context_id)
     assert cached is not None
     assert cached.chunk_start_step == 102
     assert cached.rlt_checkpoint_step == 123
+    assert cached.policy_origin == "base_vla"
+    assert cached.rlt_policy_mode == "vla_passthrough"
+    assert cached.rlt_actor_executing is False
+    assert cached.rollout_id == 2
+    assert cached.critical_phase_id == 7
     assert torch.equal(cached.reference_chunk, reference[:, 2:5].squeeze(0))
 
 
@@ -540,6 +607,69 @@ def test_accept_rlt_transition_uses_executed_chunk_as_intervention_reference(mon
     assert torch.equal(sample.next_reference_chunk, next_context.reference_chunk)
     assert sample.rlt_checkpoint_step == 250
     assert server._rlt_accepted_frames == 3
+
+
+@require_package("grpcio", "grpc")
+def test_accept_rlt_transition_persists_policy_origin(monkeypatch):
+    from lerobot.async_inference import policy_server_drtc
+    from lerobot.transport import services_pb2
+
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        policy_server_drtc,
+        "emit_status",
+        lambda source, event, **fields: emitted.append((source, event, fields)),
+    )
+
+    server = _server_for_accept_transition(policy_server_drtc)
+
+    source = policy_server_drtc.RLTSourceContext(
+        context_id=1,
+        source_control_step=10,
+        chunk_start_step=10,
+        rl_token=torch.ones(4),
+        proprio=torch.ones(2),
+        reference_chunk=torch.ones(3, 2),
+        anchor_state=None,
+        policy_origin="rlt_head",
+        rlt_policy_mode="rlt_actor",
+        rlt_actor_executing=True,
+        rollout_id=5,
+        critical_phase_id=7,
+    )
+    server._rlt_context_cache.put(source)
+
+    executed = torch.zeros(3, 2, dtype=torch.float32)
+    transition = services_pb2.RLTTransitionChunk(
+        episode_id=7,
+        source_rlt_context_id=1,
+        next_rlt_context_id=0,
+        chunk_start_step=10,
+        num_actions=3,
+        action_dim=2,
+        executed_actions_f32=executed.numpy().tobytes(),
+        reward=1.0,
+        done=True,
+        is_intervention=False,
+        success=True,
+        failure=False,
+    )
+
+    server._accept_rlt_transition(transition)
+
+    sample = server._rlt_replay.samples()[0]
+    assert sample.policy_origin == "rlt_head"
+    assert sample.rlt_policy_mode == "rlt_actor"
+    assert sample.rlt_actor_executing is True
+    assert sample.rollout_id == 5
+    assert sample.critical_phase_id == 7
+
+    accepted = next(fields for _source, event, fields in emitted if event == "rlt_transition_accepted")
+    assert accepted["policy_origin"] == "rlt_head"
+    assert accepted["rlt_policy_mode"] == "rlt_actor"
+    assert accepted["rlt_actor_executing"] is True
+    assert accepted["rollout_id"] == 5
+    assert accepted["critical_phase_id"] == 7
 
 
 @require_package("grpcio", "grpc")
